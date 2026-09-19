@@ -8,7 +8,7 @@ const dir = await mkdtemp(join(tmpdir(), 'prompt-browser-'));
 const salt = 'a'.repeat(32);
 const app = await createApp({
   origin: 'http://127.0.0.1:3080', secure: false,
-  passwordHash: `${salt}:${scryptSync('local-test-password', salt, 64).toString('hex')}`,
+  passwordHash: process.env.TEST_UNINITIALIZED ? '' : `${salt}:${scryptSync('local-test-password', salt, 64).toString('hex')}`,
   modelURL: 'https://mock.invalid', apiKey: process.env.TEST_MODEL_UNCONFIGURED ? '' : 'mock', model: 'mock', timeoutMs: 45000,
   dataDir: dir, storageKey: randomBytes(32).toString('hex'), log: () => {}
 }, async (url, options) => {

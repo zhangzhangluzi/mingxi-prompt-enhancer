@@ -1,12 +1,11 @@
 {
   "name": "private-prompt-enhancer",
-  "version": "1.7.0",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "engines": { "node": ">=22" },
   "scripts": {
     "start": "node --env-file=.env server.mjs",
-    "test": "node --test test/*.test.mjs",
-    "password": "node scripts/password.mjs"
+    "test": "node --test test/*.test.mjs"
   }
 }

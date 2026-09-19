@@ -3,11 +3,21 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light"><title>明晰 · 提示语工作台</title>
-  <link rel="stylesheet" href="/style.css?v=1.7.0"><script src="/app.js?v=1.7.0" type="module"></script>
+  <link rel="stylesheet" href="/style.css?v=2.0.0"><script src="/app.js?v=2.0.0" type="module"></script>
 </head>
 <body>
-  <header><a class="brand" href="/" aria-label="明晰首页"><span class="brand-mark" aria-hidden="true">明</span>明晰 <span class="brand-sub">提示语工作台</span></a><div class="header-right"><span class="private">私人工作空间</span><button id="logout" class="text-button" hidden>退出登录</button></div></header>
+  <header><a class="brand" href="/" aria-label="明晰首页"><span class="brand-mark" aria-hidden="true">明</span>明晰 <span class="brand-sub">提示语工作台</span></a><div class="header-right"><span class="private">私人工作空间</span><button id="change-password" class="text-button" hidden>修改密码</button><button id="logout" class="text-button" hidden>退出登录</button></div></header>
   <main>
+    <section id="setup-view" class="login-card" hidden>
+      <span class="eyebrow">首次初始化</span><h1>设置管理员密码</h1>
+      <p class="muted">完成设置后才能进入工作台。密码需为 16–256 个字符。</p>
+      <form id="setup-form">
+        <label for="setup-password">管理员密码</label><input id="setup-password" type="password" autocomplete="new-password" required minlength="16" maxlength="256" placeholder="请输入管理员密码">
+        <label for="setup-confirmation">确认密码</label><input id="setup-confirmation" type="password" autocomplete="new-password" required minlength="16" maxlength="256" placeholder="请再次输入管理员密码">
+        <button id="setup-button" class="primary" type="submit">完成初始化 <span aria-hidden="true">→</span></button>
+      </form>
+      <p id="setup-error" class="error" role="alert"></p>
+    </section>
     <section id="login-view" class="login-card" hidden>
       <span class="eyebrow">PRIVATE WORKSPACE</span><h1>让想法，<br>表达得更清楚。</h1>
       <p class="muted">输入访问密码，进入你的提示语工作台。</p>
@@ -91,6 +101,15 @@
           <label for="history-result">提示语正文</label><textarea id="history-result" required maxlength="48000"></textarea>
           <p class="small muted">保存将更新这条记录；想保留旧版，请载入工作台后“另存为新记录”。</p>
           <p id="history-form-error" class="error" role="alert"></p><div class="dialog-actions"><button type="button" class="secondary" data-close="history-dialog">取消</button><button id="history-submit" class="primary" type="submit">保存修改</button></div>
+        </form>
+      </dialog>
+      <dialog id="password-dialog" aria-labelledby="password-dialog-title">
+        <form id="password-form"><div class="manager-heading"><h2 id="password-dialog-title">修改密码</h2><button type="button" class="text-button" data-close="password-dialog">关闭</button></div>
+          <label for="current-password">当前密码</label><input id="current-password" type="password" autocomplete="current-password" required maxlength="256">
+          <label for="new-password">新密码</label><input id="new-password" type="password" autocomplete="new-password" required minlength="16" maxlength="256">
+          <label for="new-password-confirmation">确认新密码</label><input id="new-password-confirmation" type="password" autocomplete="new-password" required minlength="16" maxlength="256">
+          <p class="small muted">修改成功后，所有会话都会退出，请使用新密码重新登录。</p>
+          <p id="password-error" class="error" role="alert"></p><div class="dialog-actions"><button type="button" class="secondary" data-close="password-dialog">取消</button><button id="password-submit" class="primary" type="submit">更新密码</button></div>
         </form>
       </dialog>
       <dialog id="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-message"><h2 id="confirm-title">确认操作</h2><p id="confirm-message"></p><div class="dialog-actions"><button id="confirm-cancel" class="secondary" autofocus>取消</button><button id="confirm-accept" class="primary">确认</button></div></dialog>

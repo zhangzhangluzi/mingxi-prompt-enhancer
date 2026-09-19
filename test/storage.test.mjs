@@ -3,7 +3,27 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createHistory } from '../storage.mjs';
+import { createCredentialStore, createHistory } from '../storage.mjs';
+
+test('管理员凭据加密保存、只初始化一次并支持原子替换', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'prompt-auth-store-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const key = '7'.repeat(64), firstHash = `${'a'.repeat(32)}:${'b'.repeat(128)}`, nextHash = `${'c'.repeat(32)}:${'d'.repeat(128)}`;
+  const store = await createCredentialStore(dir, key);
+  assert.equal(await store.get(), '');
+  const attempts = await Promise.allSettled([store.initialize(firstHash), store.initialize(nextHash)]);
+  assert.equal(attempts.filter(result => result.status === 'fulfilled').length, 1);
+  const current = await store.get();
+  assert.ok([firstHash, nextHash].includes(current));
+  const replacement = current === firstHash ? nextHash : firstHash;
+  await assert.rejects(store.replace('f'.repeat(161), replacement), error => error.status === 409);
+  await store.replace(current, replacement);
+  assert.equal(await (await createCredentialStore(dir, key)).get(), replacement);
+  const bytes = await readFile(join(dir, 'auth.enc'));
+  assert.equal(bytes.includes(Buffer.from(replacement)), false);
+  assert.equal((await stat(join(dir, 'auth.enc'))).mode & 0o777, 0o600);
+  await assert.rejects((await createCredentialStore(dir, '8'.repeat(64))).get());
+});
 
 test('历史记录加密保存、并发不丢失、重启读取、重复去重与权限', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'prompt-history-'));

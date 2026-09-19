@@ -17,10 +17,53 @@ async function fixture(t, upstream, overrides = {}) {
   t.after(() => { server.closeAllConnections(); server.close(); });
   const base = `http://127.0.0.1:${server.address().port}`;
   let cookie = '';
-  const call = (path, data, headers = {}) => fetch(base + path, { method: data === undefined ? 'GET' : 'POST', headers: { Origin: config.origin, 'Content-Type': 'application/json', Cookie: cookie, ...headers }, body: data === undefined ? undefined : JSON.stringify(data) });
+  const call = async (path, data, headers = {}) => {
+    const response = await fetch(base + path, { method: data === undefined ? 'GET' : 'POST', headers: { Origin: config.origin, 'Content-Type': 'application/json', Cookie: cookie, ...headers }, body: data === undefined ? undefined : JSON.stringify(data) });
+    const nextCookie = response.headers.get('set-cookie');
+    if (nextCookie) cookie = nextCookie.split(';')[0];
+    return response;
+  };
   const login = async () => { const r = await call('/api/login', { password }); cookie = r.headers.get('set-cookie')?.split(';')[0]; return r; };
-  return { base, call, login, logs };
+  return { base, call, login, logs, clearCookie: () => { cookie = ''; } };
 }
+test('首次初始化、页面路由守卫、密码修改及凭据重启回读', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'prompt-auth-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const storageKey = '9'.repeat(64), initialPassword = 'initial-password-123456', nextPassword = 'next-password-987654321';
+  const first = await fixture(t, undefined, { dataDir: dir, storageKey, passwordHash: '' });
+  let session = await (await first.call('/api/session')).json();
+  assert.equal(session.initialized, false); assert.equal(session.authenticated, false);
+  for (const [path, location] of [['/', '/setup'], ['/login', '/setup'], ['/app', '/setup'], ['/app/guides', '/setup'], ['/app/history', '/setup'], ['/app/models', '/setup']]) {
+    const response = await fetch(first.base + path, { redirect: 'manual' });
+    assert.equal(response.status, 302); assert.equal(response.headers.get('location'), location);
+  }
+  assert.equal((await fetch(first.base + '/setup')).status, 200);
+  assert.equal((await first.call('/api/history')).status, 409);
+  assert.equal((await first.call('/api/auth/initialize', { password: 'short', confirmation: 'short' })).status, 400);
+  assert.equal((await first.call('/api/auth/initialize', { password: initialPassword, confirmation: 'different-password-1' })).status, 400);
+  let response = await first.call('/api/auth/initialize', { password: initialPassword, confirmation: initialPassword });
+  assert.equal(response.status, 200); assert.equal((await response.json()).authenticated, true);
+  assert.equal((await fetch(first.base + '/setup', { redirect: 'manual', headers: { Cookie: response.headers.get('set-cookie')?.split(';')[0] || '' } })).headers.get('location'), '/app');
+  assert.equal((await first.call('/app')).status, 200);
+  first.clearCookie();
+  for (const path of ['/app', '/app/editor', '/app/guides', '/app/history', '/app/models']) {
+    response = await fetch(first.base + path, { redirect: 'manual' });
+    assert.equal(response.status, 302); assert.equal(response.headers.get('location'), '/login');
+  }
+  assert.equal((await first.call('/api/history')).status, 401);
+  assert.equal((await first.call('/api/login', { password: initialPassword })).status, 200);
+  assert.equal((await first.call('/api/password', { currentPassword: 'wrong-password-123456', newPassword: nextPassword, confirmation: nextPassword })).status, 401);
+  assert.equal((await (await first.call('/api/session')).json()).authenticated, true);
+  response = await first.call('/api/password', { currentPassword: initialPassword, newPassword: nextPassword, confirmation: nextPassword });
+  assert.equal(response.status, 200);
+  assert.equal((await first.call('/api/login', { password: initialPassword })).status, 401);
+  assert.equal((await first.call('/api/login', { password: nextPassword })).status, 200);
+  const encrypted = await (await import('node:fs/promises')).readFile(join(dir, 'auth.enc'));
+  assert.equal(encrypted.includes(Buffer.from(initialPassword)), false); assert.equal(encrypted.includes(Buffer.from(nextPassword)), false);
+  const second = await fixture(t, undefined, { dataDir: dir, storageKey, passwordHash: '' });
+  session = await (await second.call('/api/session')).json(); assert.equal(session.initialized, true); assert.equal(session.authenticated, false);
+  assert.equal((await second.call('/api/login', { password: nextPassword })).status, 200);
+});
 test('访问保护、会话 Cookie、安全响应头、来源验证、退出失效', async t => {
   const { call, login } = await fixture(t, () => { throw new Error('must not call'); });
   assert.equal((await call('/api/enhance', { prompt: '私密信息' })).status, 401);
@@ -76,11 +119,14 @@ test('登录限流', async t => {
   assert.equal((await call('/api/login', { password })).status, 429);
 });
 test('生产配置拒绝明文站点、外网监听和不安全模型地址', () => {
-  const env = { PUBLIC_ORIGIN: 'https://prompt.example', PASSWORD_HASH: passwordHash, MODEL_BASE_URL: 'https://model.example/v1', MODEL_API_KEY: 'key', MODEL_NAME: 'model' };
+  const env = { PUBLIC_ORIGIN: 'https://prompt.example', PASSWORD_HASH: passwordHash, DATA_DIR: '/var/lib/prompt-enhancer', STORAGE_KEY: '1'.repeat(64), MODEL_BASE_URL: 'https://model.example/v1', MODEL_API_KEY: 'key', MODEL_NAME: 'model' };
   assert.equal(configFromEnv(env).secure, true);
+  assert.equal(configFromEnv({ ...env, PASSWORD_HASH: '' }).passwordHash, '');
   assert.throws(() => configFromEnv({ ...env, PUBLIC_ORIGIN: 'http://prompt.example' }));
   assert.throws(() => configFromEnv({ ...env, HOST: '0.0.0.0' }));
   assert.throws(() => configFromEnv({ ...env, MODEL_BASE_URL: 'http://model.example' }));
+  assert.throws(() => configFromEnv({ ...env, DATA_DIR: '' }));
+  assert.throws(() => configFromEnv({ ...env, STORAGE_KEY: '' }));
 });
 test('健康检查支持 GET/HEAD，readiness 在存储损坏时失败，静态资源支持 HEAD', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'prompt-health-'));

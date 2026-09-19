@@ -3,6 +3,8 @@ const preferenceKeys = { module: 'mingxi.lastApiModule', direction: 'mingxi.last
 function readPreference(key) { try { return localStorage.getItem(key) || ''; } catch { return ''; } }
 function savePreference(key, value) { try { localStorage.setItem(key, value); } catch {} }
 const viewTargets = { guides: ['guide-list', preferenceKeys.guideView], history: ['history-list', preferenceKeys.historyView], models: ['model-summary-list', preferenceKeys.modelView] };
+const panelPaths = { editor: '/app', guides: '/app/guides', history: '/app/history', models: '/app/models' };
+function panelFromPath() { return Object.entries(panelPaths).find(([, path]) => location.pathname === path)?.[0] || 'editor'; }
 function setViewMode(scope, mode) {
   const [targetId, storageKey] = viewTargets[scope] || [];
   if (!targetId) return;
@@ -21,6 +23,7 @@ let undoStack = [];
 let source = '';
 let applied = false;
 let authenticated = false;
+let initialized = true;
 let historyEnabled = false;
 let saving = false;
 let epoch = 0;
@@ -51,7 +54,7 @@ async function api(path, data, signal) {
   const json = await response.json();
   if (generation !== epoch) throw new Error('会话已改变，请重试。');
   if (!response.ok) {
-    if (response.status === 401 && path !== '/api/login') lock();
+    if (response.status === 401 && !['/api/login', '/api/password'].includes(path)) lock(true);
     throw new Error(json.error || '请求失败，请稍后重试。');
   }
   return json;
@@ -83,40 +86,55 @@ function update() {
   $('result-card').setAttribute('aria-busy', String(busy));
   $('enhance').textContent = busy ? '正在增强…' : '增强提示语 ↗';
 }
-function lock() {
-  authenticated = false; epoch++;
+function lock(isInitialized = true, updatePath = true) {
+  authenticated = false; initialized = isInitialized; epoch++;
   modelConfig = null; modelProviders = []; modelCatalog = []; modelModules = []; selectedModuleId = readPreference(preferenceKeys.module); modelSnapshot = ''; modelTransitioning = false; renderModelCatalog(); renderModuleSelectors(); $('model-form').reset(); $('model-provider').replaceChildren(); $('model-key-status').textContent = ''; $('model-feedback').textContent = ''; $('model-fields').disabled = true; $('model-editor').hidden = true;
   settleConfirmation(false);
-  for (const id of ['guide-dialog', 'history-dialog']) $(id).close();
-  $('guide-form').reset(); $('history-form').reset();
+  for (const id of ['guide-dialog', 'history-dialog', 'password-dialog']) $(id).close();
+  $('guide-form').reset(); $('history-form').reset(); $('password-form').reset();
   guides = []; records = []; activeRecord = null; resultGuide = ''; editingGuide = null; editingHistory = null;
   $('guide-list').replaceChildren(); $('history-list').replaceChildren();
   $('direction').replaceChildren(new Option('通用增强 · 不指定方向', ''));
   $('result-title').value = ''; $('result-title-wrap').hidden = true;
   request?.abort();
   clearTimeout(expiresTimer);
-  $('prompt').value = ''; $('result').value = ''; $('password').value = '';
+  $('prompt').value = ''; $('result').value = ''; $('password').value = ''; $('setup-form').reset();
   undoStack = []; source = ''; applied = false;
   $('result').hidden = true; $('empty-result').hidden = false;
   $('result-tag').textContent = '等待你的想法';
 
   clearStatus(); showError();
-  $('workspace').hidden = true; $('logout').hidden = true; $('login-view').hidden = false;
+  $('workspace').hidden = true; $('logout').hidden = true; $('change-password').hidden = true;
+  $('login-view').hidden = !isInitialized; $('setup-view').hidden = isInitialized;
+  if (updatePath) history.replaceState(null, '', isInitialized ? '/login' : '/setup');
   update();
 }
 function unlock(session) {
-  authenticated = true; epoch++;
+  authenticated = true; initialized = true; epoch++;
   maxInput = session.maxInput;
   historyEnabled = session.historyEnabled;
   $('save').hidden = !historyEnabled; $('new-guide').disabled = !historyEnabled;
-  $('password').value = ''; $('login-error').textContent = '';
-  $('login-view').hidden = true; $('workspace').hidden = false; $('logout').hidden = false;
+  $('password').value = ''; $('login-error').textContent = ''; $('setup-error').textContent = '';
+  $('login-view').hidden = true; $('setup-view').hidden = true; $('workspace').hidden = false; $('logout').hidden = false; $('change-password').hidden = false;
+  const panel = panelFromPath();
+  if (!location.pathname.startsWith('/app')) history.replaceState(null, '', panelPaths[panel]);
   clearTimeout(expiresTimer);
-  expiresTimer = setTimeout(() => { lock(); $('login-error').textContent = '会话已过期，页面内容已清除，请重新登录。'; }, Math.max(0, session.expiresAt - Date.now()));
+  expiresTimer = setTimeout(() => { lock(true); $('login-error').textContent = '会话已过期，页面内容已清除，请重新登录。'; }, Math.max(0, session.expiresAt - Date.now()));
   update(); $('prompt').focus();
   $('model-notice').hidden = session.modelReady;
-  showPanel('editor'); loadGuides(); loadModuleSelectors();
+  showPanel(panel, false); if (panel !== 'guides') loadGuides(); loadModuleSelectors();
 }
+$('setup-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const password = $('setup-password').value, confirmation = $('setup-confirmation').value;
+  $('setup-error').textContent = '';
+  if ([...password].length < 16 || [...password].length > 256) { $('setup-error').textContent = '密码必须为 16–256 个字符。'; return; }
+  if (password !== confirmation) { $('setup-error').textContent = '两次输入的密码不一致。'; return; }
+  $('setup-button').disabled = true; $('setup-button').textContent = '正在初始化…';
+  try { unlock(await api('/api/auth/initialize', { password, confirmation }, AbortSignal.timeout(20000))); }
+  catch (error) { $('setup-error').textContent = error.name === 'TimeoutError' ? '初始化超时，请重试。' : error.message; }
+  finally { $('setup-button').disabled = false; $('setup-button').textContent = '完成初始化 →'; }
+});
 $('login-form').addEventListener('submit', async event => {
   event.preventDefault(); $('login-button').disabled = true; $('login-button').textContent = '正在验证…'; $('login-error').textContent = '';
   try { unlock(await api('/api/login', { password: $('password').value }, AbortSignal.timeout(15000))); }
@@ -125,9 +143,25 @@ $('login-form').addEventListener('submit', async event => {
 });
 $('logout').addEventListener('click', async () => {
   $('logout').disabled = true;
-  try { await api('/api/logout', {}, AbortSignal.timeout(15000)); lock(); $('password').focus(); }
+  try { await api('/api/logout', {}, AbortSignal.timeout(15000)); lock(true); $('password').focus(); }
   catch { showError('退出失败，请检查网络后重试。'); }
   finally { $('logout').disabled = false; }
+});
+$('change-password').addEventListener('click', () => {
+  $('password-form').reset(); $('password-error').textContent = ''; $('password-dialog').showModal(); $('current-password').focus();
+});
+$('password-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const currentPassword = $('current-password').value, newPassword = $('new-password').value, confirmation = $('new-password-confirmation').value;
+  $('password-error').textContent = '';
+  if ([...newPassword].length < 16 || [...newPassword].length > 256) { $('password-error').textContent = '新密码必须为 16–256 个字符。'; return; }
+  if (newPassword !== confirmation) { $('password-error').textContent = '两次输入的新密码不一致。'; return; }
+  $('password-submit').disabled = true; $('password-submit').textContent = '正在更新…';
+  try {
+    await api('/api/password', { currentPassword, newPassword, confirmation }, AbortSignal.timeout(20000));
+    $('password-dialog').close(); lock(true); $('login-error').textContent = '密码已更新，请使用新密码重新登录。'; $('password').focus();
+  } catch (error) { if (authenticated) $('password-error').textContent = error.name === 'TimeoutError' ? '更新超时，请重试。' : error.message; }
+  finally { $('password-submit').disabled = false; $('password-submit').textContent = '更新密码'; }
 });
 function renderModuleSelectors() { const select = $('api-module-select'); select.replaceChildren(new Option(modelModules.length ? '请选择 API 模块' : '默认 API 模块', '')); for (const item of modelModules) select.add(new Option(`${item.name} · ${item.model || '未选择模型'}`, item.id)); select.value = selectedModuleId; }
 $('api-module-select').addEventListener('change', () => { selectedModuleId = $('api-module-select').value; savePreference(preferenceKeys.module, selectedModuleId); });
@@ -190,18 +224,20 @@ async function saveResult(asCopy = false) {
 }
 $('save').addEventListener('click', () => saveResult());
 $('save-copy').addEventListener('click', () => saveResult(true));
-function showPanel(panel) {
+function showPanel(panel, updatePath = true) {
   currentPanel = panel;
   for (const name of ['editor', 'guides', 'history', 'models']) $(name + '-panel').hidden = name !== panel;
   for (const button of document.querySelectorAll('[data-panel]')) {
     if (button.dataset.panel === panel) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current');
   }
   showError();
+  if (updatePath && location.pathname !== panelPaths[panel]) history.pushState(null, '', panelPaths[panel]);
   if (panel === 'guides') loadGuides();
   if (panel === 'history') loadHistory();
   if (panel === 'models' && !modelConfig && !modelBusy) loadModel();
 }
 for (const button of document.querySelectorAll('[data-panel]')) button.addEventListener('click', () => showPanel(button.dataset.panel));
+window.addEventListener('popstate', () => { if (authenticated) showPanel(panelFromPath(), false); });
 function element(tag, text, className) {
   const node = document.createElement(tag); if (text) node.textContent = text; if (className) node.className = className; return node;
 }
@@ -315,12 +351,13 @@ function openHistory(record) {
 $('new-guide').addEventListener('click', () => openGuide());
 async function closeDialog(id) {
   if (modalBusy) return;
+  if (id === 'password-dialog') { $('password-form').reset(); $('password-error').textContent = ''; $(id).close(); return; }
   const fields = id === 'guide-dialog' ? guideFields() : historyFields();
   if (modalSnapshot !== JSON.stringify(fields) && !await askConfirm('修改尚未保存，确定放弃？')) return;
   $(id).close();
 }
 for (const button of document.querySelectorAll('[data-close]')) button.addEventListener('click', () => closeDialog(button.dataset.close));
-for (const id of ['guide-dialog', 'history-dialog']) $(id).addEventListener('cancel', event => { event.preventDefault(); closeDialog(id); });
+for (const id of ['guide-dialog', 'history-dialog', 'password-dialog']) $(id).addEventListener('cancel', event => { event.preventDefault(); closeDialog(id); });
 async function submitDialog(kind, event) {
   event.preventDefault(); if (modalBusy) return;
   const prefix = kind === 'guides' ? 'guide' : 'history';
@@ -476,8 +513,8 @@ $('model-test').addEventListener('click', async () => {
   finally { modelBusy = false; $('model-fields').disabled = !authenticated; $('refresh-model').disabled = false; }
 });
 // 后退缓存恢复时重新验证，不恢复上一会话的敏感文本。
-window.addEventListener('pagehide', lock);
+window.addEventListener('pagehide', () => lock(initialized, false));
 window.addEventListener('pageshow', event => { if (event.persisted) location.reload(); });
-try { const session = await api('/api/session', undefined, AbortSignal.timeout(15000)); if (session.authenticated) unlock(session); else lock(); }
-catch { lock(); $('login-error').textContent = '无法连接服务器，请检查网络后重试。'; }
+try { const session = await api('/api/session', undefined, AbortSignal.timeout(15000)); if (session.authenticated) unlock(session); else lock(session.initialized, false); }
+catch { lock(true, false); $('login-error').textContent = '无法连接服务器，请检查网络后重试。'; }
 finally { $('initial-status').hidden = true; }

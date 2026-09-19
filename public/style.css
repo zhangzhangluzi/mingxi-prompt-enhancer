@@ -113,3 +113,6 @@ button:active:not(:disabled){filter:brightness(.95)}
 .model-summary-list[data-view=grid] .model-summary-row:last-child{border-bottom:1px solid var(--line)}
 .model-summary-list[data-view=grid] .record-actions{margin-top:auto}
 @media(max-width:760px){.list-tools .view-switch{margin-left:0}.view-switch button{padding-left:10px;padding-right:10px}.model-page-actions{gap:8px}.management-list[data-view=grid],.model-summary-list[data-view=grid]{grid-template-columns:1fr}}
+.login-card form label+input+label{margin-top:16px}
+#password-dialog{width:min(480px,calc(100vw - 32px))}
+@media(max-width:760px){.header-right{gap:4px}.header-right .text-button{padding-left:8px;padding-right:8px}}

@@ -71,3 +71,50 @@ export async function createStore(directory, keyHex, name, defaults = []) {
   };
 }
 export const createHistory = (directory, keyHex) => createStore(directory, keyHex, 'history');
+
+export async function createCredentialStore(directory, keyHex) {
+  if (!directory || !/^[a-f0-9]{64}$/.test(keyHex || '')) throw new Error('凭据存储需要 DATA_DIR 和 32 字节 STORAGE_KEY。');
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const key = Buffer.from(keyHex, 'hex');
+  const filename = join(directory, 'auth.enc');
+  let queue = Promise.resolve();
+  async function read() {
+    let bytes;
+    try { bytes = await readFile(filename); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+    const decrypt = createDecipheriv('aes-256-gcm', key, bytes.subarray(0, 12));
+    decrypt.setAuthTag(bytes.subarray(12, 28));
+    const record = JSON.parse(Buffer.concat([decrypt.update(bytes.subarray(28)), decrypt.final()]).toString('utf8'));
+    if (!record || record.version !== 1 || !/^[a-f0-9]{32}:[a-f0-9]{128}$/.test(record.passwordHash || '')) throw new Error('凭据存储格式无效。');
+    return record;
+  }
+  async function write(passwordHash) {
+    if (!/^[a-f0-9]{32}:[a-f0-9]{128}$/.test(passwordHash || '')) throw new Error('密码哈希格式无效。');
+    const iv = randomBytes(12);
+    const cipher = createCipheriv('aes-256-gcm', key, iv);
+    const record = { version: 1, passwordHash, updatedAt: new Date().toISOString() };
+    const encrypted = Buffer.concat([cipher.update(JSON.stringify(record), 'utf8'), cipher.final()]);
+    const temp = `${filename}.${randomBytes(8).toString('hex')}.tmp`;
+    try {
+      await writeFile(temp, Buffer.concat([iv, cipher.getAuthTag(), encrypted]), { mode: 0o600, flag: 'wx' });
+      await rename(temp, filename);
+    } finally { await unlink(temp).catch(error => { if (error.code !== 'ENOENT') throw error; }); }
+  }
+  function serial(operation) {
+    const next = queue.then(operation);
+    queue = next.catch(() => {});
+    return next;
+  }
+  return {
+    get: () => serial(async () => (await read())?.passwordHash || ''),
+    initialize: passwordHash => serial(async () => {
+      if (await read()) throw new StoreError(409, '管理员密码已经初始化。');
+      await write(passwordHash);
+    }),
+    replace: (expected, passwordHash) => serial(async () => {
+      const current = await read();
+      if (!current) throw new StoreError(409, '管理员密码尚未初始化。');
+      if (current.passwordHash !== expected) throw new StoreError(409, '密码已被其他会话修改，请重新登录。');
+      await write(passwordHash);
+    })
+  };
+}
