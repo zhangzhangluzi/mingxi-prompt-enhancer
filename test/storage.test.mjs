@@ -41,7 +41,8 @@ test('历史记录加密保存、并发不丢失、重启读取、重复去重�
   const wrongKey = await createHistory(dir, 'b'.repeat(64));
   await assert.rejects(wrongKey.list());
   bytes[35] ^= 1; await writeFile(join(dir, 'history.enc'), bytes);
-  await assert.rejects(history.list());
+  await assert.rejects(history.verify());
+  assert.equal((await history.list()).length, 2);
 });
 
 test('旧版历史无损读取，更新持久化、并发编辑拒绝覆盖，删除后重启不恢复', async t => {

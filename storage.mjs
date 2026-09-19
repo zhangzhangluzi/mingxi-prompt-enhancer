@@ -68,7 +68,7 @@ export async function createStore(directory, keyHex, name, defaults = []) {
     return index;
   }
   return {
-    list: () => serial(read),
+    list: () => read(),
     verify: () => serial(() => read(true)).then(() => undefined),
     replaceAll: records => serial(async () => {
       if (!Array.isArray(records)) throw new StoreError(400, '导入数据必须是数组。');

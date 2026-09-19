@@ -140,7 +140,7 @@ test('健康检查支持 GET/HEAD，readiness 在存储损坏时失败，静态�
   response = await call('/health/ready'); assert.equal(response.status, 200); assert.deepEqual(await response.json(), { status: 'ready' });
   response = await fetch(`${base}/`, { method: 'HEAD' }); assert.equal(response.status, 200); assert.equal(await response.text(), ''); assert.match(response.headers.get('content-type'), /text\/html/);
   assert.equal(response.headers.get('cache-control'), 'no-store');
-  response = await fetch(`${base}/app.js?v=2.2.1`, { method: 'HEAD' }); assert.equal(response.status, 200); assert.equal(response.headers.get('cache-control'), 'public, max-age=31536000, immutable');
+  response = await fetch(`${base}/app.js?v=2.2.2`, { method: 'HEAD' }); assert.equal(response.status, 200); assert.equal(response.headers.get('cache-control'), 'public, max-age=31536000, immutable');
   response = await fetch(`${base}/app.js`, { method: 'HEAD' }); assert.equal(response.status, 200); assert.equal(response.headers.get('cache-control'), 'no-store');
   await login(); await call('/api/history', { original: '原文', result: '结果' });
   await writeFile(join(dir, 'history.enc'), 'corrupted');
