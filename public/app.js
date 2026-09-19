@@ -64,7 +64,7 @@ function update() {
 }
 function lock() {
   authenticated = false; epoch++;
-  modelConfig = null; modelProviders = []; modelCatalog = []; modelModules = []; selectedModuleId = ''; modelSnapshot = ''; modelTransitioning = false; renderModelCatalog(); renderModuleSelectors(); $('model-form').reset(); $('model-provider').replaceChildren(); $('model-key-status').textContent = ''; $('model-feedback').textContent = ''; $('model-fields').disabled = true;
+  modelConfig = null; modelProviders = []; modelCatalog = []; modelModules = []; selectedModuleId = ''; modelSnapshot = ''; modelTransitioning = false; renderModelCatalog(); renderModuleSelectors(); $('model-form').reset(); $('model-provider').replaceChildren(); $('model-key-status').textContent = ''; $('model-feedback').textContent = ''; $('model-fields').disabled = true; $('model-editor').hidden = true;
   settleConfirmation(false);
   for (const id of ['guide-dialog', 'history-dialog']) $(id).close();
   $('guide-form').reset(); $('history-form').reset();
@@ -367,7 +367,7 @@ function renderSavedModules() {
 }
 async function openModel(item, test = false) {
   await guardModelDraft(() => {
-    displayModel(item); $('model-editor').open = true;
+    displayModel(item); $('model-editor').hidden = false; $('model-editor').open = true;
     if (test) $('model-test').click();
   });
 }
@@ -388,7 +388,7 @@ function displayNewModel() {
   modelFeedback('正在新建 API 模块，请填写名称、地址和密钥。');
 }
 async function createModel() {
-  await guardModelDraft(() => { $('model-editor').open = true; displayNewModel(); $('model-module-name').focus(); });
+  await guardModelDraft(() => { $('model-editor').hidden = false; $('model-editor').open = true; displayNewModel(); $('model-module-name').focus(); });
 }
 $('model-create').addEventListener('click', createModel);
 $('model-new').addEventListener('click', createModel);
@@ -400,7 +400,7 @@ $('model-module').addEventListener('change', async () => {
 });
 async function loadModel() {
   if (modelBusy) return;
-  modelBusy = true; $('refresh-model').disabled = true; $('model-fields').disabled = true; modelFeedback('正在读取配置…');
+  modelBusy = true; $('model-editor').hidden = true; $('refresh-model').disabled = true; $('model-fields').disabled = true; modelFeedback('正在读取配置…');
   try {
     const data = await api('/api/models', undefined, AbortSignal.timeout(15000));
     modelProviders = data.providers; modelModules = data.modules || []; renderSavedModules(); if (!selectedModuleId || !modelModules.some(m => m.id === selectedModuleId)) selectedModuleId = modelModules[0]?.id || ''; renderModuleSelectors(); $('model-provider').replaceChildren(...modelProviders.map(p => new Option(p.name, p.id)));
@@ -412,7 +412,7 @@ async function loadModel() {
 $('refresh-model').addEventListener('click', async () => {
   await guardModelDraft(loadModel);
 });
-$('model-delete').addEventListener('click', async () => { if (!modelConfig || modelBusy) return; if (!await askConfirm(`确定删除 API 模块“${modelConfig.name || '未命名'}”？`)) return; const deletedId = modelConfig.id; modelBusy = true; try { const data = await api('/api/models/delete', { id: deletedId, revision: modelConfig.revision }, AbortSignal.timeout(15000)); modelModules = data.modules || []; if (selectedModuleId === deletedId || !modelModules.some(item => item.id === selectedModuleId)) selectedModuleId = modelModules[0]?.id || ''; renderModuleSelectors(); modelConfig = modelModules[0] || null; if (modelConfig) displayModel(modelConfig); else { $('model-form').reset(); modelCatalog = []; renderModelCatalog(); } modelFeedback('API 模块已删除。'); } catch (error) { modelFeedback(error.message, true); } finally { modelBusy = false; } });
+$('model-delete').addEventListener('click', async () => { if (!modelConfig || modelBusy) return; if (!await askConfirm(`确定删除 API 模块“${modelConfig.name || '未命名'}”？`)) return; const deletedId = modelConfig.id; modelBusy = true; try { const data = await api('/api/models/delete', { id: deletedId, revision: modelConfig.revision }, AbortSignal.timeout(15000)); modelModules = data.modules || []; if (selectedModuleId === deletedId || !modelModules.some(item => item.id === selectedModuleId)) selectedModuleId = modelModules[0]?.id || ''; renderModuleSelectors(); modelConfig = modelModules[0] || null; if (modelConfig) displayModel(modelConfig); else { $('model-form').reset(); modelCatalog = []; renderModelCatalog(); } $('model-editor').hidden = true; modelFeedback('API 模块已删除。'); } catch (error) { modelFeedback(error.message, true); } finally { modelBusy = false; } });
 $('model-provider').addEventListener('change', () => {
   const preset = modelProviders.find(p => p.id === $('model-provider').value);
   if (preset) { $('model-base').value = preset.baseURL; $('model-protocol').value = preset.protocol; modelCatalog = []; renderModelCatalog(); $('model-key').value = ''; modelFeedback('请填写密钥，再点击“拉取模型列表”。'); }
