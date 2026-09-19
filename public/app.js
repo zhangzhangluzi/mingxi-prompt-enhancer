@@ -146,7 +146,7 @@ async function enhance() {
 }
 $('enhance').addEventListener('click', enhance);
 $('cancel').addEventListener('click', () => request?.abort());
-$('prompt').addEventListener('input', () => { applied = false; update(); showError(); suggestDirection(); });
+$('prompt').addEventListener('input', () => { applied = false; update(); showError(); });
 $('result').addEventListener('input', () => { applied = false; update(); });
 $('replace').addEventListener('click', async () => {
   if (!$('result').value || busy || applied) return;
@@ -207,21 +207,8 @@ function directions() {
   $('guide-category').replaceChildren(new Option('全部分类', ''), ...categories.map(c => new Option(c, c)));
   if (categories.includes(category)) $('guide-category').value = category;
   $('guide-categories').replaceChildren(...categories.map(c => new Option(c, c)));
-  directionHelp();
 }
-function directionHelp() {
-  suggestDirection();
-}
-function suggestDirection() {
-  const text = $('prompt').value;
-  const checks = [['交易系统', /交易系统|交易所|下单|撤单|持仓|平仓|止盈|止损|trading|bybit|binance/i], ['本地软件处理', /本地软件|桌面软件|软件安装|软件升级|软件修复|软件配置|自启动|开机启动|macos|windows|桌面应用/i], ['guide-code', /代码|开发|程序|报错|调试|code|debug|api|python|javascript/i], ['guide-analysis', /数据|分析|比较|决策|analysis|compare|data/i], ['guide-writing', /邮件|写作|文案|报告|email|write|copywriting/i], ['guide-creative', /图像|画面|故事|设计|image|story|design/i]];
-  const id = checks.find(([, pattern]) => pattern.test(text))?.[0] || 'guide-clear';
-  const guide = guides.find(g => g.id === id || g.name === id);
-  const box = $('direction-suggestion'); box.replaceChildren();
-  if (!text.trim() || !guide || guide.id === $('direction').value) return;
-  box.append(element('span', '根据关键词建议：'), action(guide.name, () => { $('direction').value = guide.id; savePreference(preferenceKeys.direction, guide.id); directionHelp(); }, 'text-button'));
-}
-$('direction').addEventListener('change', () => { savePreference(preferenceKeys.direction, $('direction').value); directionHelp(); });
+$('direction').addEventListener('change', () => savePreference(preferenceKeys.direction, $('direction').value));
 async function loadGuides() {
   $('refresh-guides').disabled = true;
   try { const data = await api('/api/guides', undefined, AbortSignal.timeout(15000)); guides = data.records; directions(); renderGuides(); }
@@ -249,7 +236,7 @@ function renderGuides() {
     const card = element('article', '', 'record-card'); const top = element('div', '', 'record-top');
     top.append(element('h3', g.name), element('span', g.category, 'category-badge'));
     const actions = element('div', '', 'record-actions');
-    actions.append(action('使用指引', () => { if (busy) return showError('请等待当前增强完成。'); $('direction').value = g.id; savePreference(preferenceKeys.direction, g.id); directionHelp(); showPanel('editor'); $('prompt').focus(); }), action('编辑', () => openGuide(g)), action('删除', () => removeRecord('guides', g), 'danger-button'));
+    actions.append(action('使用指引', () => { if (busy) return showError('请等待当前增强完成。'); $('direction').value = g.id; savePreference(preferenceKeys.direction, g.id); showPanel('editor'); $('prompt').focus(); }), action('编辑', () => openGuide(g)), action('删除', () => removeRecord('guides', g), 'danger-button'));
     card.append(top, element('p', g.description, 'record-preview'), element('p', g.instructions, 'record-preview'), actions); list.append(card);
   }
 }
@@ -275,7 +262,7 @@ async function restoreRecord(record) {
   $('prompt').value = record.original; source = record.original; $('result').value = record.result; activeRecord = record; resultGuide = record.guideName || '';
   $('result-title').value = record.title || ''; $('result-title-wrap').hidden = true; applied = false;
   $('result').hidden = false; $('empty-result').hidden = true; $('result-tag').textContent = '可编辑 · 已保存记录';
-  showPanel('editor'); update(); suggestDirection(); showStatus('已载入收藏。'); $('prompt').focus();
+  showPanel('editor'); update(); showStatus('已载入收藏。'); $('prompt').focus();
 }
 async function removeRecord(kind, record) {
   if (libraryBusy) return;
