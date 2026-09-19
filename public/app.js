@@ -43,6 +43,7 @@ let modelProviders = [];
 let modelBusy = false;
 let modelCatalog = [];
 let modelModules = [];
+const DATA_IMPORT_MAX_BYTES = 16 * 1024 * 1024;
 let selectedModuleId = readPreference(preferenceKeys.module);
 let modelSnapshot = '';
 let modelTransitioning = false;
@@ -296,8 +297,9 @@ function resetImportSelection(clearFeedback = true) {
 $('import-json').addEventListener('input', () => resetImportSelection());
 $('import-parse').addEventListener('click', () => {
   resetImportSelection(false);
-  const source = $('import-json').value.trim();
-  if (!source) return transferFeedback('import', '请先粘贴 JSON 内容。', true);
+  const source = $('import-json').value;
+  if (!source.trim()) return transferFeedback('import', '请先粘贴 JSON 内容。', true);
+  if (new Blob([source]).size > DATA_IMPORT_MAX_BYTES) return transferFeedback('import', 'JSON 超过 16 MiB 导入上限，请缩减数据后重试。', true);
   let payload;
   try { payload = JSON.parse(source); }
   catch (error) { return transferFeedback('import', `JSON 格式错误：${error.message}`, true); }
@@ -518,10 +520,13 @@ function renderSavedModules() {
   }
 }
 async function openModel(item, test = false) {
-  await guardModelDraft(() => {
-    displayModel(item); $('model-editor').hidden = false; $('model-editor').open = true;
-    if (test) $('model-test').click();
-  });
+  try {
+    await guardModelDraft(async () => {
+      const data = await api(`/api/models?id=${encodeURIComponent(item.id)}`, undefined, AbortSignal.timeout(15000));
+      displayModel(data.config); $('model-editor').hidden = false; $('model-editor').open = true;
+      if (test) $('model-test').click();
+    });
+  } catch (error) { if (authenticated) modelFeedback(error.message, true); }
 }
 function displayModel(config) {
   modelConfig = config; renderSavedModules();
@@ -547,14 +552,20 @@ $('model-new').addEventListener('click', createModel);
 $('model-module').addEventListener('change', async () => {
   const item = modelModules.find(m => m.id === $('model-module').value);
   if (!item) return;
-  const changed = await guardModelDraft(() => displayModel(item));
+  let changed = false;
+  try {
+    changed = await guardModelDraft(async () => {
+      const data = await api(`/api/models?id=${encodeURIComponent(item.id)}`, undefined, AbortSignal.timeout(15000));
+      displayModel(data.config);
+    });
+  } catch (error) { if (authenticated) modelFeedback(error.message, true); }
   if (!changed) $('model-module').value = modelConfig?.id || '';
 });
 async function loadModel() {
   if (modelBusy) return;
   modelBusy = true; $('model-editor').hidden = true; $('refresh-model').disabled = true; $('model-fields').disabled = true; modelFeedback('正在读取配置…');
   try {
-    const data = await api('/api/models', undefined, AbortSignal.timeout(15000));
+    const data = await api('/api/models?detail=first', undefined, AbortSignal.timeout(15000));
     modelProviders = data.providers; modelModules = data.modules || []; renderSavedModules(); if (!selectedModuleId || !modelModules.some(m => m.id === selectedModuleId)) selectedModuleId = modelModules[0]?.id || ''; savePreference(preferenceKeys.module, selectedModuleId); renderModuleSelectors(); $('model-provider').replaceChildren(...modelProviders.map(p => new Option(p.name, p.id)));
     displayModel(data.config); $('model-fields').disabled = !data.editable;
     modelFeedback(data.editable ? '填写地址与密钥后拉取模型，选择并保存即可使用。' : '管理员尚未启用持久化配置。');
@@ -564,7 +575,7 @@ async function loadModel() {
 $('refresh-model').addEventListener('click', async () => {
   await guardModelDraft(loadModel);
 });
-$('model-delete').addEventListener('click', async () => { if (!modelConfig || modelBusy) return; if (!await askConfirm(`确定删除 API 模块“${modelConfig.name || '未命名'}”？`)) return; const deletedId = modelConfig.id; modelBusy = true; try { const data = await api('/api/models/delete', { id: deletedId, revision: modelConfig.revision }, AbortSignal.timeout(15000)); modelModules = data.modules || []; if (selectedModuleId === deletedId || !modelModules.some(item => item.id === selectedModuleId)) selectedModuleId = modelModules[0]?.id || ''; savePreference(preferenceKeys.module, selectedModuleId); renderModuleSelectors(); modelConfig = modelModules[0] || null; if (modelConfig) displayModel(modelConfig); else { $('model-form').reset(); modelCatalog = []; renderModelCatalog(); } $('model-editor').hidden = true; modelFeedback('API 模块已删除。'); } catch (error) { modelFeedback(error.message, true); } finally { modelBusy = false; } });
+$('model-delete').addEventListener('click', async () => { if (!modelConfig || modelBusy) return; if (!await askConfirm(`确定删除 API 模块“${modelConfig.name || '未命名'}”？`)) return; const deletedId = modelConfig.id; modelBusy = true; try { const data = await api('/api/models/delete', { id: deletedId, revision: modelConfig.revision }, AbortSignal.timeout(15000)); modelModules = data.modules || []; if (selectedModuleId === deletedId || !modelModules.some(item => item.id === selectedModuleId)) selectedModuleId = modelModules[0]?.id || ''; savePreference(preferenceKeys.module, selectedModuleId); renderModuleSelectors(); modelConfig = null; $('model-form').reset(); modelCatalog = []; renderModelCatalog(); rememberModelDraft(); $('model-editor').hidden = true; modelFeedback('API 模块已删除。'); } catch (error) { modelFeedback(error.message, true); } finally { modelBusy = false; } });
 $('model-provider').addEventListener('change', () => {
   const preset = modelProviders.find(p => p.id === $('model-provider').value);
   if (preset) { $('model-base').value = preset.baseURL; $('model-protocol').value = preset.protocol; modelCatalog = []; renderModelCatalog(); $('model-key').value = ''; modelFeedback('请填写密钥，再点击“拉取模型列表”。'); }

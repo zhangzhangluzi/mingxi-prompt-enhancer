@@ -85,6 +85,8 @@ test('整体替换会原子持久化并保持加密与权限', async t => {
   assert.equal((await stat(join(dir, 'guides.enc'))).mode & 0o777, 0o600);
   await assert.rejects(store.replaceAll(Array.from({ length: 101 }, (_, index) => ({ id: `g-${index}` }))), error => error.status === 409);
   assert.equal((await store.list()).length, 1);
+  await assert.rejects(store.replaceAll([{ id: 'oversized', content: 'x'.repeat(1536 * 1024) }]), error => error.status === 413 && /存储上限/.test(error.message));
+  assert.equal((await store.list())[0].name, '导入指引');
 });
 
 test('导出兼容缺少创建时间的旧模型记录', async () => {

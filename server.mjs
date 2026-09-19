@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { MAX_INPUT, SYSTEM_PROMPT } from './prompt.mjs';
-import { createCredentialStore, createHistory, createStore, StoreError } from './storage.mjs';
+import { assertStoreCapacity, createCredentialStore, createHistory, createStore, DATA_IMPORT_MAX_BYTES, StoreError } from './storage.mjs';
 import { DEFAULT_GUIDES } from './guides.mjs';
 import { PROTOCOLS, PROVIDERS, validateBase, validateModel, modelReady, publicModel, modelRequest, modelOutput, safeModelFetch, catalogFields, discoverModels } from './models.mjs';
 import { TRANSFER_MODULES, createTransfer, validateTransfer } from './transfer.mjs';
@@ -42,6 +42,10 @@ export function configFromEnv(env = process.env) {
 }
 async function bodyJSON(req, maxBytes = 65536) {
   if (req.headers['content-type']?.split(';')[0] !== 'application/json') throw new HttpError(415, '请使用 JSON 请求。');
+  const declaredLength = req.headers['content-length'];
+  if (declaredLength !== undefined && (!/^\d+$/.test(declaredLength) || Number(declaredLength) > maxBytes)) {
+    throw new HttpError(413, '输入过长，请缩短后重试。');
+  }
   let length = 0;
   const chunks = [];
   for await (const chunk of req) {
@@ -105,10 +109,15 @@ export async function createApp(config, fetchModel = safeModelFetch) {
     } catch { return false; }
   };
   const safeModel = item => ({ ...publicModel(item), id: item.id, name: item.name || '未命名 API 模块' });
+  const safeModelSummary = item => {
+    const { models, ...summary } = safeModel(item);
+    return summary;
+  };
   const files = new Map(await Promise.all(['index.html', 'style.css', 'app.js'].map(async name => [name, await readFile(new URL(`./public/${name}`, import.meta.url))])));
   const sessions = new Map();
   const attempts = new Map();
   let active = 0;
+  let importActive = false;
   let dataQueue = Promise.resolve();
   const serializeData = operation => {
     const next = dataQueue.then(operation);
@@ -184,7 +193,8 @@ export async function createApp(config, fetchModel = safeModelFetch) {
       if (!res.writableFinished) { failure ||= 'client_disconnect'; recordRequest(499); }
     });
     try {
-      const path = new URL(req.url, config.origin).pathname;
+      const requestURL = new URL(req.url, config.origin);
+      const path = requestURL.pathname;
       requestPath = path;
       for (const [key, value] of sessions) if (Date.now() >= value.expires) sessions.delete(key);
       const token = (req.headers.cookie || '').split(';').map(x => x.trim()).find(x => x.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1);
@@ -248,38 +258,54 @@ export async function createApp(config, fetchModel = safeModelFetch) {
         }
         if (path === '/api/data/import' && req.method === 'POST') {
           if (!guides || !history || !modelStore) throw new HttpError(503, '管理员尚未启用持久化存储。');
+          if (importActive) throw new HttpError(429, '已有导入任务正在处理，请稍后重试。');
           limit(`import:${token}`, 10, 60000);
-          const input = await bodyJSON(req, 48 * 1024 * 1024);
-          if (!Array.isArray(input.modules) || !input.modules.length || input.modules.some(name => !TRANSFER_MODULES.includes(name)) || new Set(input.modules).size !== input.modules.length) throw new HttpError(400, '请选择要导入的有效模块。');
-          const payload = validateTransfer(input.payload);
-          for (const name of input.modules) {
-            if (payload.data[name] === null) throw new HttpError(400, `JSON 中不包含所选模块：${name}。`);
-          }
-          if (input.modules.includes('models') && payload.data.models.length === 0) throw new HttpError(400, '模型配置至少需要保留一个 API 模块。');
-          const stores = { guides, favorites: history, models: modelStore };
-          const counts = await serializeData(async () => {
-            const snapshots = Object.fromEntries(await Promise.all(input.modules.map(async name => [name, await stores[name].list()])));
-            const applied = [];
-            try {
-              for (const name of input.modules) {
-                await stores[name].replaceAll(payload.data[name]);
-                applied.push(name);
-              }
-            } catch (error) {
-              let rollbackFailed = false;
-              for (const name of applied.reverse()) {
-                try { await stores[name].replaceAll(snapshots[name]); } catch { rollbackFailed = true; }
-              }
-              if (rollbackFailed) throw new HttpError(503, '导入失败且自动回滚未完成，请停止继续操作并检查服务器存储。');
-              throw new HttpError(503, '导入写入失败，已恢复导入前数据。');
+          importActive = true;
+          try {
+            const input = await bodyJSON(req, DATA_IMPORT_MAX_BYTES);
+            if (!Array.isArray(input.modules) || !input.modules.length || input.modules.some(name => !TRANSFER_MODULES.includes(name)) || new Set(input.modules).size !== input.modules.length) throw new HttpError(400, '请选择要导入的有效模块。');
+            const payload = validateTransfer(input.payload);
+            const storeNames = { guides: 'guides', favorites: 'history', models: 'model' };
+            for (const name of input.modules) {
+              if (payload.data[name] === null) throw new HttpError(400, `JSON 中不包含所选模块：${name}。`);
+              assertStoreCapacity(storeNames[name], payload.data[name]);
             }
-            return Object.fromEntries(input.modules.map(name => [name, payload.data[name].length]));
-          });
-          return send(200, { ok: true, imported: counts });
+            if (input.modules.includes('models') && payload.data.models.length === 0) throw new HttpError(400, '模型配置至少需要保留一个 API 模块。');
+            const stores = { guides, favorites: history, models: modelStore };
+            const counts = await serializeData(async () => {
+              const snapshots = Object.fromEntries(await Promise.all(input.modules.map(async name => [name, await stores[name].list()])));
+              for (const name of input.modules) assertStoreCapacity(storeNames[name], snapshots[name]);
+              const applied = [];
+              try {
+                for (const name of input.modules) {
+                  await stores[name].replaceAll(payload.data[name]);
+                  applied.push(name);
+                }
+              } catch (error) {
+                let rollbackFailed = false;
+                for (const name of applied.reverse()) {
+                  try { await stores[name].replaceAll(snapshots[name]); } catch { rollbackFailed = true; }
+                }
+                if (rollbackFailed) throw new HttpError(503, '导入失败且自动回滚未完成，请停止继续操作并检查服务器存储。');
+                throw new HttpError(503, '导入写入失败，已恢复导入前数据。');
+              }
+              return Object.fromEntries(input.modules.map(name => [name, payload.data[name].length]));
+            });
+            return send(200, { ok: true, imported: counts });
+          } finally { importActive = false; }
         }
         if (path === '/api/models' || path === '/api/model') {
           const records = req.method === 'GET' ? await serializeData(listModels) : await listModels();
-          if (req.method === 'GET') return send(200, { modules: records.map(safeModel), config: safeModel(records[0] || initialModel), providers: PROVIDERS, editable: !!modelStore });
+          if (req.method === 'GET') {
+            const requestedId = requestURL.searchParams.get('id');
+            const selected = requestedId ? records.find(item => item.id === requestedId) : records[0];
+            if (requestedId && !selected) throw new HttpError(404, '该 API 模块不存在，请刷新列表。');
+            const includeDetail = path === '/api/model' || !!requestedId || requestURL.searchParams.get('detail') === 'first';
+            return send(200, {
+              modules: records.map(safeModelSummary),
+              ...(includeDetail ? { config: safeModel(selected || initialModel), providers: PROVIDERS, editable: !!modelStore } : {})
+            });
+          }
           if (req.method !== 'POST') throw new HttpError(405, '请求方法不支持。');
           if (!modelStore) throw new HttpError(503, '管理员尚未启用持久化存储。');
           limit(`model:${token}`, 40, 60000);
@@ -292,7 +318,7 @@ export async function createApp(config, fetchModel = safeModelFetch) {
           const basePrevious = current || initialModel;
           const fields = { name: name || basePrevious.name || 'API 模块', ...catalogFields(input, basePrevious, validateModel(input, basePrevious, true)) };
           const saved = await serializeData(() => current ? modelStore.update(current.id, input.revision, fields) : modelStore.save(fields, { deduplicate: false }));
-          return send(200, path === '/api/model' ? { config: safeModel(saved) } : { module: safeModel(saved), modules: (await listModels()).map(safeModel) });
+          return send(200, path === '/api/model' ? { config: safeModel(saved) } : { module: safeModel(saved), modules: (await listModels()).map(safeModelSummary) });
         }
         if (path === '/api/models/update' && req.method === 'POST') {
           if (!modelStore) throw new HttpError(503, '管理员尚未启用持久化存储。');
@@ -301,7 +327,7 @@ export async function createApp(config, fetchModel = safeModelFetch) {
           if (!Number.isSafeInteger(input.revision) || input.revision < 1) throw new HttpError(400, '配置版本无效，请刷新。');
           const name = typeof input.name === 'string' ? input.name.trim() : ''; if (!name || name.length > 80) throw new HttpError(400, '模块名称不能为空或超过 80 个字符。');
           const saved = await serializeData(() => modelStore.update(current.id, input.revision, { name, ...catalogFields(input, current, validateModel(input, current, true)) }));
-          return send(200, { module: safeModel(saved), modules: (await listModels()).map(safeModel) });
+          return send(200, { module: safeModel(saved), modules: (await listModels()).map(safeModelSummary) });
         }
         if (path === '/api/models/delete' && req.method === 'POST') {
           if (!modelStore) throw new HttpError(503, '管理员尚未启用持久化存储。');
@@ -309,7 +335,7 @@ export async function createApp(config, fetchModel = safeModelFetch) {
           if (!current) throw new HttpError(404, '该 API 模块不存在，请刷新列表。');
           if (!Number.isSafeInteger(input.revision) || input.revision < 1) throw new HttpError(400, '配置版本无效，请刷新列表。');
           if (records.length <= 1) throw new HttpError(409, '至少保留一个 API 模块；可清空模块内容来停用增强。');
-          await serializeData(() => modelStore.remove(current.id, input.revision)); return send(200, { ok: true, modules: (await listModels()).map(safeModel) });
+          await serializeData(() => modelStore.remove(current.id, input.revision)); return send(200, { ok: true, modules: (await listModels()).map(safeModelSummary) });
         }
         if (path === '/api/model/discover' && req.method === 'POST') {
           const input = await bodyJSON(req);
@@ -426,6 +452,7 @@ export async function createApp(config, fetchModel = safeModelFetch) {
       } else if (!['/style.css', '/app.js'].includes(path)) throw new HttpError(404, '页面不存在。');
       const name = ['/style.css', '/app.js'].includes(path) ? path.slice(1) : 'index.html';
       const type = { 'index.html': 'text/html', 'style.css': 'text/css', 'app.js': 'text/javascript' }[name];
+      if (name !== 'index.html' && requestURL.searchParams.has('v')) res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
       res.writeHead(200, { 'Content-Type': `${type}; charset=utf-8`, 'Content-Length': files.get(name).length });
       res.end(req.method === 'HEAD' ? undefined : files.get(name));
     } catch (error) {

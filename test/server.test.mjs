@@ -1,10 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { scryptSync } from 'node:crypto';
+import { request as httpRequest } from 'node:http';
+import { createConnection } from 'node:net';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApp, configFromEnv } from '../server.mjs';
+import { DATA_IMPORT_MAX_BYTES } from '../storage.mjs';
 
 const password = 'test-password-123456789';
 const salt = 'a'.repeat(32);
@@ -24,7 +27,7 @@ async function fixture(t, upstream, overrides = {}) {
     return response;
   };
   const login = async () => { const r = await call('/api/login', { password }); cookie = r.headers.get('set-cookie')?.split(';')[0]; return r; };
-  return { base, call, login, logs, clearCookie: () => { cookie = ''; } };
+  return { base, call, login, logs, getCookie: () => cookie, clearCookie: () => { cookie = ''; } };
 }
 test('首次初始化、页面路由守卫、密码修改及凭据重启回读', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'prompt-auth-'));
@@ -136,6 +139,9 @@ test('健康检查支持 GET/HEAD，readiness 在存储损坏时失败，静态�
   response = await fetch(`${base}/health/live`, { method: 'HEAD' }); assert.equal(response.status, 200); assert.equal(await response.text(), '');
   response = await call('/health/ready'); assert.equal(response.status, 200); assert.deepEqual(await response.json(), { status: 'ready' });
   response = await fetch(`${base}/`, { method: 'HEAD' }); assert.equal(response.status, 200); assert.equal(await response.text(), ''); assert.match(response.headers.get('content-type'), /text\/html/);
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  response = await fetch(`${base}/app.js?v=2.2.0`, { method: 'HEAD' }); assert.equal(response.status, 200); assert.equal(response.headers.get('cache-control'), 'public, max-age=31536000, immutable');
+  response = await fetch(`${base}/app.js`, { method: 'HEAD' }); assert.equal(response.status, 200); assert.equal(response.headers.get('cache-control'), 'no-store');
   await login(); await call('/api/history', { original: '原文', result: '结果' });
   await writeFile(join(dir, 'history.enc'), 'corrupted');
   response = await call('/health/ready'); assert.equal(response.status, 503); assert.deepEqual(await response.json(), { status: 'unavailable' });
@@ -252,6 +258,9 @@ test('多个 API 模块可保存、自定义名称可回读，增强按 moduleId
   await login();
   const created=await call('/api/models',{name:'备用模块',protocol:'chat',baseURL:'https://second.example/v1',apiKey:'second-key',model:'second-model',models:['second-model']}); assert.equal(created.status,200); const module=await created.json(); assert.equal(module.module.name,'备用模块'); assert.ok(module.module.id); assert.equal(module.modules.length,2);
   const list=await (await call('/api/models')).json(); assert.deepEqual(list.modules.map(x=>x.name),['备用模块','环境默认模块']);
+  assert.equal(list.config, undefined); assert.equal(list.modules.some(item => Object.hasOwn(item, 'models')), false);
+  const detail=await (await call(`/api/models?id=${module.module.id}`)).json(); assert.deepEqual(detail.config.models,['second-model']);
+  assert.equal((await call('/api/models?id=missing-module')).status,404);
   assert.equal((await call('/api/enhance',{prompt:'使用备用模块',moduleId:module.module.id})).status,200); assert.deepEqual(used,['second-model']);
   const response=await call('/api/enhance',{prompt:'使用默认模块',moduleId:list.modules.find(x=>x.name==='环境默认模块').id}); assert.equal(response.status,200); assert.deepEqual(used,['second-model','default-model']);
   const deleted=await call('/api/models/delete',{id:module.module.id,revision:module.module.revision}); assert.equal(deleted.status,200); assert.equal((await (await call('/api/models')).json()).modules.length,1);
@@ -306,4 +315,29 @@ test('导出包含三个模块，导入仅覆盖勾选模块且重复执行幂�
   response = await call('/api/enhance', { prompt: '使用恢复模型', moduleId: 'import-model' });
   assert.equal(response.status, 200);
   assert.deepEqual(used, { url: 'https://restored.example/v1/chat/completions', authorization: 'Bearer restored-key', model: 'restored-model' });
+});
+
+test('导入在读取正文前拒绝超限请求并限制单并发', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'prompt-import-limit-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const { base, login, getCookie } = await fixture(t, undefined, { dataDir: dir, storageKey: '7'.repeat(64) });
+  await login();
+  const headers = { Origin: 'https://test.example', 'Content-Type': 'application/json', Cookie: getCookie() };
+  const oversized = await new Promise((resolve, reject) => {
+    const request = httpRequest(`${base}/api/data/import`, { method: 'POST', headers: { ...headers, 'Content-Length': DATA_IMPORT_MAX_BYTES + 1 } }, response => {
+      response.resume(); response.on('end', () => resolve(response));
+    });
+    request.on('error', reject); request.end();
+  });
+  assert.equal(oversized.statusCode, 413);
+
+  const target = new URL(base), slow = createConnection({ host: target.hostname, port: Number(target.port) });
+  slow.on('error', () => {}); t.after(() => slow.destroy());
+  await new Promise(resolve => slow.once('connect', resolve));
+  slow.setNoDelay(true);
+  slow.write(`POST /api/data/import HTTP/1.1\r\nHost: ${target.host}\r\nOrigin: https://test.example\r\nContent-Type: application/json\r\nCookie: ${getCookie()}\r\nContent-Length: 100\r\nConnection: keep-alive\r\n\r\n{"payload":`);
+  await new Promise(resolve => setTimeout(resolve, 25));
+  const concurrent = await fetch(`${base}/api/data/import`, { method: 'POST', headers, body: '{}' });
+  assert.equal(concurrent.status, 429); assert.match(await concurrent.text(), /已有导入任务/);
+  slow.destroy();
 });

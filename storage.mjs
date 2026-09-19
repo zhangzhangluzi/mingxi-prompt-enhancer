@@ -5,6 +5,21 @@ import { join } from 'node:path';
 export class StoreError extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
+export const DATA_IMPORT_MAX_BYTES = 16 * 1024 * 1024;
+export const STORE_BYTE_LIMITS = Object.freeze({
+  guides: 1536 * 1024,
+  history: 8 * 1024 * 1024,
+  model: 5 * 1024 * 1024
+});
+const STORE_LABELS = { guides: '指引', history: '已收藏', model: '模型配置' };
+export function assertStoreCapacity(name, records) {
+  const json = JSON.stringify(records);
+  const limit = STORE_BYTE_LIMITS[name];
+  if (limit && Buffer.byteLength(json, 'utf8') > limit) {
+    throw new StoreError(413, `${STORE_LABELS[name]}数据超过存储上限，请删除不再需要的内容后重试。`);
+  }
+  return json;
+}
 // 兼容旧的 history.enc 数组格式。串行读改写 + revision 防止并发覆盖。
 export async function createStore(directory, keyHex, name, defaults = []) {
   if (!directory || !/^[a-f0-9]{64}$/.test(keyHex || '')) throw new Error('存储需要 DATA_DIR 和 32 字节 STORAGE_KEY。');
@@ -23,9 +38,10 @@ export async function createStore(directory, keyHex, name, defaults = []) {
     return records.map(record => ({ revision: 1, updatedAt: record.createdAt, ...record }));
   }
   async function write(records) {
+    const json = assertStoreCapacity(name, records);
     const iv = randomBytes(12);
     const cipher = createCipheriv('aes-256-gcm', key, iv);
-    const encrypted = Buffer.concat([cipher.update(JSON.stringify(records), 'utf8'), cipher.final()]);
+    const encrypted = Buffer.concat([cipher.update(json, 'utf8'), cipher.final()]);
     const temp = `${filename}.${randomBytes(8).toString('hex')}.tmp`;
     try {
       await writeFile(temp, Buffer.concat([iv, cipher.getAuthTag(), encrypted]), { mode: 0o600, flag: 'wx' });
