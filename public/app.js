@@ -60,7 +60,7 @@ async function api(path, data, signal) {
   const json = await response.json();
   if (generation !== epoch) throw new Error('会话已改变，请重试。');
   if (!response.ok) {
-    if (response.status === 401 && !['/api/login', '/api/password'].includes(path)) lock(true);
+    if (response.status === 401 && !['/api/login', '/api/password', '/api/data/export'].includes(path)) lock(true);
     throw new Error(json.error || '请求失败，请稍后重试。');
   }
   return json;
@@ -96,8 +96,8 @@ function lock(isInitialized = true, updatePath = true) {
   authenticated = false; initialized = isInitialized; epoch++;
   modelConfig = null; modelProviders = []; modelCatalog = []; modelModules = []; selectedModuleId = readPreference(preferenceKeys.module); modelSnapshot = ''; modelTransitioning = false; renderModelCatalog(); renderModuleSelectors(); $('model-form').reset(); $('model-provider').replaceChildren(); $('model-key-status').textContent = ''; $('model-feedback').textContent = ''; $('model-fields').disabled = true; $('model-editor').hidden = true;
   settleConfirmation(false);
-  for (const id of ['guide-dialog', 'history-dialog', 'password-dialog']) $(id).close();
-  $('guide-form').reset(); $('history-form').reset(); $('password-form').reset();
+  for (const id of ['guide-dialog', 'history-dialog', 'password-dialog', 'export-dialog']) $(id).close();
+  $('guide-form').reset(); $('history-form').reset(); $('password-form').reset(); $('export-form').reset(); $('export-error').textContent = '';
   guides = []; records = []; activeRecord = null; resultGuide = ''; editingGuide = null; editingHistory = null;
   $('guide-list').replaceChildren(); $('history-list').replaceChildren();
   $('direction').replaceChildren(new Option('通用增强 · 不指定方向', ''));
@@ -107,7 +107,7 @@ function lock(isInitialized = true, updatePath = true) {
   $('prompt').value = ''; $('result').value = ''; $('password').value = ''; $('setup-form').reset();
   transferPayload = null; exportBusy = false; importBusy = false;
   clearTimeout(exportStatusTimer); clearTimeout(importStatusTimer);
-  $('export-json').value = ''; $('import-json').value = ''; $('export-status').textContent = ''; $('import-status').textContent = '';
+  $('export-json').value = ''; $('export-result').hidden = true; $('export-locked').hidden = false; $('import-json').value = ''; $('export-status').textContent = ''; $('import-status').textContent = '';
   $('import-modules').hidden = true; $('import-submit-wrap').hidden = true; $('export-copy').disabled = true;
   undoStack = []; source = ''; applied = false;
   $('result').hidden = true; $('empty-result').hidden = false;
@@ -236,7 +236,7 @@ $('save').addEventListener('click', () => saveResult());
 $('save-copy').addEventListener('click', () => saveResult(true));
 function showPanel(panel, updatePath = true) {
   if (currentPanel === 'data' && panel !== 'data') {
-    $('export-json').value = ''; $('import-json').value = ''; $('export-copy').disabled = true;
+    clearExportData(); $('import-json').value = ''; $('export-copy').disabled = true;
     transferFeedback('export'); resetImportSelection();
   }
   currentPanel = panel;
@@ -249,7 +249,6 @@ function showPanel(panel, updatePath = true) {
   if (panel === 'guides') loadGuides();
   if (panel === 'history') loadHistory();
   if (panel === 'models' && !modelConfig && !modelBusy) loadModel();
-  if (panel === 'data' && !$('export-json').value && !exportBusy) loadDataExport();
 }
 for (const button of document.querySelectorAll('[data-panel]')) button.addEventListener('click', () => showPanel(button.dataset.panel));
 window.addEventListener('popstate', () => { if (authenticated) showPanel(panelFromPath(), false); });
@@ -265,20 +264,30 @@ function transferFeedback(kind, message = '', error = false, delay = 0) {
     if (timerName === 'exportStatusTimer') exportStatusTimer = timer; else importStatusTimer = timer;
   }
 }
-async function loadDataExport() {
+function clearExportData() {
+  clearTimeout(exportStatusTimer); exportStatusTimer = undefined;
+  $('export-form').reset(); $('export-error').textContent = '';
+  $('export-json').value = ''; $('export-result').hidden = true; $('export-locked').hidden = false; $('export-copy').disabled = true;
+  transferFeedback('export');
+}
+function openExportDialog() {
   if (!authenticated || exportBusy) return;
-  exportBusy = true; $('export-refresh').disabled = true; $('export-copy').disabled = true;
-  transferFeedback('export', '正在生成…');
+  if ($('export-result').hidden) clearExportData();
+  $('export-form').reset(); $('export-error').textContent = ''; $('export-dialog').showModal(); $('export-password').focus();
+}
+$('export-generate').addEventListener('click', openExportDialog);
+$('export-form').addEventListener('submit', async event => {
+  event.preventDefault(); if (exportBusy) return;
+  exportBusy = true; $('export-submit').disabled = true; $('export-generate').disabled = true; $('export-submit').textContent = '正在验证…'; $('export-error').textContent = '';
   try {
-    const payload = await api('/api/data/export', undefined, AbortSignal.timeout(20000));
-    $('export-json').value = JSON.stringify(payload, null, 2);
-    $('export-copy').disabled = false;
+    const payload = await api('/api/data/export', { password: $('export-password').value }, AbortSignal.timeout(20000));
+    $('export-json').value = JSON.stringify(payload, null, 2); $('export-result').hidden = false; $('export-locked').hidden = true; $('export-copy').disabled = false;
+    $('export-dialog').close(); $('export-form').reset();
     transferFeedback('export', `已生成：指引 ${payload.data.guides.length} 条，已收藏 ${payload.data.favorites.length} 条，模型配置 ${payload.data.models.length} 条。`);
   } catch (error) {
-    if (authenticated) transferFeedback('export', error.name === 'TimeoutError' ? '生成超时，请重试。' : error.message, true);
-  } finally { exportBusy = false; $('export-refresh').disabled = false; }
-}
-$('export-refresh').addEventListener('click', loadDataExport);
+    if (authenticated) { $('export-password').value = ''; $('export-error').textContent = error.name === 'TimeoutError' ? '验证超时，请重试。' : error.message; $('export-password').focus(); }
+  } finally { exportBusy = false; $('export-submit').disabled = false; $('export-generate').disabled = false; $('export-submit').textContent = '验证并生成'; }
+});
 $('export-copy').addEventListener('click', async () => {
   if (!$('export-json').value) return;
   try {
@@ -338,7 +347,7 @@ $('import-submit').addEventListener('click', async () => {
     if (modules.includes('guides')) await loadGuides();
     if (modules.includes('favorites')) { activeRecord = null; await loadHistory(); update(); }
     if (modules.includes('models')) { modelConfig = null; await loadModel(); await loadModuleSelectors(); }
-    await loadDataExport();
+    clearExportData();
     const summary = modules.map(name => `${names[name]} ${result.imported[name]} 条`).join('，');
     transferFeedback('import', `导入完成：${summary}。`, false, 4000);
   } catch (error) {
@@ -462,12 +471,13 @@ $('new-guide').addEventListener('click', () => openGuide());
 async function closeDialog(id) {
   if (modalBusy) return;
   if (id === 'password-dialog') { $('password-form').reset(); $('password-error').textContent = ''; $(id).close(); return; }
+  if (id === 'export-dialog') { $('export-form').reset(); $('export-error').textContent = ''; $(id).close(); return; }
   const fields = id === 'guide-dialog' ? guideFields() : historyFields();
   if (modalSnapshot !== JSON.stringify(fields) && !await askConfirm('修改尚未保存，确定放弃？')) return;
   $(id).close();
 }
 for (const button of document.querySelectorAll('[data-close]')) button.addEventListener('click', () => closeDialog(button.dataset.close));
-for (const id of ['guide-dialog', 'history-dialog', 'password-dialog']) $(id).addEventListener('cancel', event => { event.preventDefault(); closeDialog(id); });
+for (const id of ['guide-dialog', 'history-dialog', 'password-dialog', 'export-dialog']) $(id).addEventListener('cancel', event => { event.preventDefault(); closeDialog(id); });
 async function submitDialog(kind, event) {
   event.preventDefault(); if (modalBusy) return;
   const prefix = kind === 'guides' ? 'guide' : 'history';
