@@ -1,0 +1,51 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createHistory } from '../storage.mjs';
+
+test('历史记录加密保存、并发不丢失、重启读取、重复去重与权限', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'prompt-history-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const key = 'a'.repeat(64);
+  const history = await createHistory(dir, key);
+  await Promise.all([history.save({ original: '私密原文一', result: '结果一' }), history.save({ original: '私密原文二', result: '结果二' })]);
+  await history.save({ original: '私密原文一', result: '结果一' });
+  assert.equal((await history.list()).length, 2);
+  const bytes = await readFile(join(dir, 'history.enc'));
+  assert.equal(bytes.includes(Buffer.from('私密原文')), false);
+  assert.equal((await stat(join(dir, 'history.enc'))).mode & 0o777, 0o600);
+  const restarted = await createHistory(dir, key);
+  assert.equal((await restarted.list())[0].original, '私密原文二');
+  const wrongKey = await createHistory(dir, 'b'.repeat(64));
+  await assert.rejects(wrongKey.list());
+  bytes[35] ^= 1; await writeFile(join(dir, 'history.enc'), bytes);
+  await assert.rejects(history.list());
+});
+
+test('旧版历史无损读取，更新持久化、并发编辑拒绝覆盖，删除后重启不恢复', async t => {
+  const { createCipheriv } = await import('node:crypto');
+  const { createStore } = await import('../storage.mjs');
+  const dir = await mkdtemp(join(tmpdir(), 'prompt-legacy-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const key = 'd'.repeat(64), iv = Buffer.alloc(12, 1);
+  const cipher = createCipheriv('aes-256-gcm', Buffer.from(key, 'hex'), iv);
+  const original = { id: 'legacy', original: '旧版原文', result: '旧版正文', createdAt: '2026-01-01T00:00:00Z' };
+  const bytes = Buffer.concat([cipher.update(JSON.stringify([original])), cipher.final()]);
+  await writeFile(join(dir, 'history.enc'), Buffer.concat([iv, cipher.getAuthTag(), bytes]));
+  let history = await createHistory(dir, key);
+  assert.equal((await history.list())[0].revision, 1);
+  const writes = await Promise.allSettled([history.update('legacy', 1, { result: '版本二' }), history.update('legacy', 1, { result: '覆盖版本' })]);
+  assert.equal(writes.filter(r => r.status === 'fulfilled').length, 1);
+  assert.equal(writes.find(r => r.status === 'rejected').reason.status, 409);
+  history = await createHistory(dir, key);
+  assert.equal((await history.list())[0].result, '版本二');
+  assert.equal((await history.list())[0].original, original.original);
+  await history.remove('legacy', 2);
+  assert.deepEqual(await (await createHistory(dir, key)).list(), []);
+  const defaults = [{ id: 'builtin', revision: 1, name: '默认' }];
+  const guides = await createStore(dir, key, 'guides', defaults);
+  await guides.remove('builtin', 1);
+  assert.deepEqual(await (await createStore(dir, key, 'guides', defaults)).list(), []);
+});

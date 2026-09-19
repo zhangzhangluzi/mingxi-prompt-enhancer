@@ -1,0 +1,4 @@
+# 添加到现有 Caddy 配置中，替换域名；不要覆盖已有站点。
+prompt.example.com {
+    reverse_proxy 127.0.0.1:3080
+}

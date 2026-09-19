@@ -1,0 +1,29 @@
+[Unit]
+Description=Private Prompt Enhancer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=prompt-enhancer
+Group=prompt-enhancer
+WorkingDirectory=/opt/prompt-enhancer
+EnvironmentFile=/etc/prompt-enhancer.env
+ExecStart=/opt/prompt-enhancer-runtime/bin/node /opt/prompt-enhancer/server.mjs
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+StateDirectory=prompt-enhancer
+StateDirectoryMode=0700
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+UMask=0077
+MemoryMax=256M
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target

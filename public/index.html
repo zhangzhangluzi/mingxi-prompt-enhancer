@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light"><title>明晰 · 提示语工作台</title>
+  <link rel="stylesheet" href="/style.css"><script src="/app.js" type="module"></script>
+</head>
+<body>
+  <header><a class="brand" href="/" aria-label="明晰首页"><span class="brand-mark" aria-hidden="true">明</span>明晰 <span class="brand-sub">提示语工作台</span></a><div class="header-right"><span class="private">私人工作空间</span><button id="logout" class="text-button" hidden>退出登录</button></div></header>
+  <main>
+    <section id="login-view" class="login-card" hidden>
+      <span class="eyebrow">PRIVATE WORKSPACE</span><h1>让想法，<br>表达得更清楚。</h1>
+      <p class="muted">输入访问密码，进入你的提示语工作台。</p>
+      <form id="login-form"><label for="password">访问密码</label><input id="password" type="password" autocomplete="current-password" required maxlength="256" placeholder="请输入访问密码"><button id="login-button" class="primary" type="submit">进入工作台 <span aria-hidden="true">→</span></button></form>
+      <p id="login-error" class="error" role="alert"></p>
+      <p class="small muted">访问权限由服务器验证。请妥善保管密码。</p>
+    </section>
+    <section id="workspace" hidden>
+      <nav class="workspace-nav" aria-label="工作台模块">
+        <button type="button" data-panel="editor" aria-current="page">提示语增强</button>
+        <button type="button" data-panel="guides">指引管理</button>
+        <button type="button" data-panel="history">已收藏</button>
+        <button type="button" data-panel="models">模型配置</button>
+      </nav>
+      <p id="model-notice" class="small muted" hidden>模型服务尚未配置。请在“模型配置”中填写服务商和密钥，指引管理和历史编辑可正常使用。</p>
+      <p id="error" class="error" role="alert"></p><p id="status" class="status small" role="status" aria-live="polite"></p>
+      <section id="editor-panel">
+      <div class="direction-card">
+        <div class="editor-select-field"><label for="api-module-select">API 模块</label><select id="api-module-select"><option value="">默认 API 模块</option></select></div>
+        <div class="editor-select-field"><label for="direction">优化方向</label>
+        <select id="direction"><option value="">通用增强 · 不指定方向</option></select></div>
+        <button id="manage-guides" class="text-button">管理指引 →</button>
+        <div id="direction-suggestion" class="small" aria-live="polite"></div>
+      </div>
+      <div class="editor-grid">
+        <section class="editor-card"><div class="card-heading"><div><span class="step">01</span><label for="prompt">你的提示语</label></div><button id="undo" class="text-button" disabled>撤销替换</button></div>
+          <textarea id="prompt" spellcheck="false" placeholder="例如：帮我写一封给客户的邮件，说明项目延期两天，语气诚恳，控制在 200 字以内。" aria-describedby="input-help counter" dir="auto"></textarea>
+          <div class="editor-bottom"><span id="input-help" class="small muted">保留原意 · 保留原语言</span><span id="counter" class="small muted">0 / 8,000</span></div>
+          <div class="action-bar"><button id="enhance" class="primary">增强提示语 <span aria-hidden="true">↗</span></button><button id="cancel" class="text-button" hidden>取消</button></div>
+        </section>
+        <section id="result-card" class="editor-card result-card" aria-busy="false"><div class="card-heading"><div><span class="step">02</span><label for="result">增强结果</label></div><span id="result-tag" class="small muted">等待你的想法</span></div>
+          <div id="empty-result" class="empty-result"><span class="empty-glyph" aria-hidden="true">↗</span><h2>更明确，也更贴近本意</h2><p>增强后的提示语会显示在这里。<br>你可以复制使用，或替换左侧原文。</p></div>
+          <div id="result-title-wrap" class="result-title" hidden><label for="result-title" class="small muted">收藏标题（可选）</label><input id="result-title" maxlength="100" placeholder="不填写则使用原文作为列表标识"></div>
+          <textarea id="result" hidden dir="auto" aria-label="增强后的提示语正文"></textarea>
+          <div class="result-actions"><button id="save" class="text-button" disabled hidden>保存记录</button><button id="save-copy" class="text-button" hidden>另存为新记录</button><button id="copy" class="secondary" disabled>复制正文</button><button id="replace" class="secondary" disabled>替换原文 <span aria-hidden="true">←</span></button></div>
+        </section>
+      </div>
+      </section>
+      <section id="guides-panel" hidden>
+        <div class="manager-heading"><div><h2>提示指引</h2><p class="muted small">把常用的优化方法保存下来，每次增强时直接选择。</p></div><button id="new-guide" class="primary">新增指引</button></div>
+        <div class="list-tools"><label class="sr-only" for="guide-search">搜索指引</label><input id="guide-search" type="search" placeholder="搜索名称、分类或指引内容"><label class="sr-only" for="guide-category">按分类筛选</label><select id="guide-category"><option value="">全部分类</option></select><button id="refresh-guides" class="secondary">刷新列表</button></div>
+        <p id="guide-count" class="small muted"></p><div id="guide-list" class="management-list"></div>
+      </section>
+      <section id="history-panel" hidden>
+        <div class="manager-heading"><div><h2>已收藏</h2><p class="muted small">管理主动保存的提示语，或载入工作台继续迭代。增强结果不会自动收藏。</p></div><button id="refresh-history" class="secondary">刷新收藏</button></div>
+        <label class="sr-only" for="history-search">搜索历史提示语</label><input id="history-search" type="search" placeholder="搜索标题、原文或增强正文">
+        <p id="history-count" class="small muted"></p><div id="history-list" class="management-list"></div>
+      </section>
+      <section id="models-panel" hidden>
+        <div class="manager-heading"><div><h2>模型配置</h2><p class="muted small">选择文本模型服务。保存后立即用于增强，支持自定义兼容接口。</p></div><button id="refresh-model" class="secondary">刷新配置</button></div>
+        <div id="model-summary-list" class="model-summary-list" aria-label="已保存的 API 模块列表"></div>
+        <button id="model-create" type="button" class="secondary">新建 API 模块</button>
+        <details id="model-editor"><summary class="model-editor-toggle">配置详情</summary>
+        <form id="model-form" class="model-card" autocomplete="off">
+          <fieldset id="model-fields" disabled>
+            <div class="model-field-row"><label for="model-module">已保存 API 模块</label><select id="model-module"></select></div>
+            <div class="model-field-row model-module-name-row"><label for="model-module-name">模块名称</label><div class="model-catalog-tools"><input id="model-module-name" maxlength="80" placeholder="例如：OpenAI 主账号" required><button id="model-new" type="button" class="secondary">新建模块</button><button id="model-delete" type="button" class="text-button danger-button">删除模块</button></div></div>
+            <div class="model-field-row"><label for="model-provider">服务商预设</label><select id="model-provider"></select></div>
+            <div class="model-grid"><div class="model-field-row"><label for="model-protocol">接口协议</label><select id="model-protocol"><option value="chat">OpenAI 兼容 · Chat Completions</option><option value="responses">OpenAI · Responses</option><option value="anthropic">Claude · Messages</option><option value="gemini">Gemini · Generate Content</option></select></div><div class="model-field-row"><label for="model-name">模型列表（选择一个用于增强）</label><select id="model-name" size="4"><option value="">请先拉取模型，再选择</option></select></div></div>
+            <div class="model-field-row"><label for="model-base">API 基础地址</label><div><input id="model-base" required type="url" maxlength="2048" placeholder="https://api.example.com/v1" spellcheck="false"><p class="small muted">填写到版本路径，例如 /v1 或 /v1beta；无需追加 /chat/completions。</p></div></div>
+            <div class="model-field-row"><label for="model-key">API 密钥</label><div><input id="model-key" type="password" maxlength="4096" autocomplete="new-password" placeholder="输入 API 密钥"><p id="model-key-status" class="small muted"></p></div></div>
+            <div class="model-catalog-tools model-list-actions"><button id="model-fetch" type="button" class="secondary">拉取模型列表</button><button id="model-remove" type="button" class="text-button" disabled>移除所选模型</button><span id="model-count" class="small muted">列表为空</span></div>
+            <p class="small muted model-hint">填写地址和密钥即可拉取，无需预填模型名称。选择、移除后点击保存；重新拉取会恢复完整列表。</p>
+            <details class="model-manual"><summary>服务商不支持列表？手动添加</summary><label for="model-manual-id">模型 ID</label><div class="model-catalog-tools"><input id="model-manual-id" maxlength="200" placeholder="仅在无法拉取时使用" spellcheck="false"><button id="model-add" type="button" class="secondary">添加到列表</button></div></details>
+            <div class="record-actions"><button id="model-save" type="submit" class="primary">保存配置</button><button id="model-test" type="button" class="secondary">测试已保存配置</button></div>
+          </fieldset>
+          <p id="model-feedback" class="small" role="status" aria-live="polite"></p>
+          <p class="small muted">密钥在服务器加密存储，保存后不会回传。拥有网站访问密码的人可管理配置。连接测试会向所选服务商发送固定短句，可能产生少量费用。</p>
+        </form>
+        </details>
+      </section>
+      <dialog id="guide-dialog" aria-labelledby="guide-dialog-title">
+        <form id="guide-form"><div class="manager-heading"><h2 id="guide-dialog-title">新增指引</h2><button type="button" class="text-button" data-close="guide-dialog">关闭</button></div>
+          <label for="guide-name">指引名称</label><input id="guide-name" required maxlength="80" placeholder="例如：产品需求澄清">
+          <label for="guide-kind">分类</label><input id="guide-kind" required maxlength="30" placeholder="例如：产品、写作、技术" list="guide-categories"><datalist id="guide-categories"></datalist>
+          <label for="guide-description">使用建议</label><textarea id="guide-description" required maxlength="300" placeholder="适合什么内容？输入时建议补充哪些信息？"></textarea>
+          <label for="guide-instructions">优化指引</label><textarea id="guide-instructions" required maxlength="4000" placeholder="说明优化时应关注的重点，不需要重复保留原意、原语言等通用规则。"></textarea>
+          <p id="guide-form-error" class="error" role="alert"></p><div class="dialog-actions"><button type="button" class="secondary" data-close="guide-dialog">取消</button><button id="guide-submit" class="primary" type="submit">保存指引</button></div>
+        </form>
+      </dialog>
+      <dialog id="history-dialog" aria-labelledby="history-dialog-title">
+        <form id="history-form"><div class="manager-heading"><h2 id="history-dialog-title">编辑历史提示语</h2><button type="button" class="text-button" data-close="history-dialog">关闭</button></div>
+          <label for="history-title">标题（选填）</label><input id="history-title" maxlength="100">
+          <label for="history-original">原始提示语</label><textarea id="history-original" required></textarea>
+          <label for="history-result">提示语正文</label><textarea id="history-result" required maxlength="48000"></textarea>
+          <p class="small muted">保存将更新这条记录；想保留旧版，请载入工作台后“另存为新记录”。</p>
+          <p id="history-form-error" class="error" role="alert"></p><div class="dialog-actions"><button type="button" class="secondary" data-close="history-dialog">取消</button><button id="history-submit" class="primary" type="submit">保存修改</button></div>
+        </form>
+      </dialog>
+      <dialog id="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-message"><h2 id="confirm-title">确认操作</h2><p id="confirm-message"></p><div class="dialog-actions"><button id="confirm-cancel" class="secondary" autofocus>取消</button><button id="confirm-accept" class="primary">确认</button></div></dialog>
+    </section>
+    <p id="initial-status" class="muted" role="status">正在验证会话…</p>
+  </main>
+</body>
+</html>

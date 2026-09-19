@@ -1,0 +1,73 @@
+import { mkdir, readFile, writeFile, rename, unlink } from 'node:fs/promises';
+import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { join } from 'node:path';
+
+export class StoreError extends Error {
+  constructor(status, message) { super(message); this.status = status; }
+}
+// 兼容旧的 history.enc 数组格式。串行读改写 + revision 防止并发覆盖。
+export async function createStore(directory, keyHex, name, defaults = []) {
+  if (!directory || !/^[a-f0-9]{64}$/.test(keyHex || '')) throw new Error('存储需要 DATA_DIR 和 32 字节 STORAGE_KEY。');
+  if (!['history', 'guides', 'model'].includes(name)) throw new Error('无效存储名称。');
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const key = Buffer.from(keyHex, 'hex');
+  const filename = join(directory, `${name}.enc`);
+  let queue = Promise.resolve();
+  async function read() {
+    let bytes;
+    try { bytes = await readFile(filename); } catch (error) { if (error.code === 'ENOENT') return structuredClone(defaults); throw error; }
+    const decrypt = createDecipheriv('aes-256-gcm', key, bytes.subarray(0, 12));
+    decrypt.setAuthTag(bytes.subarray(12, 28));
+    const records = JSON.parse(Buffer.concat([decrypt.update(bytes.subarray(28)), decrypt.final()]).toString('utf8'));
+    if (!Array.isArray(records)) throw new Error('存储格式无效。');
+    return records.map(record => ({ revision: 1, updatedAt: record.createdAt, ...record }));
+  }
+  async function write(records) {
+    const iv = randomBytes(12);
+    const cipher = createCipheriv('aes-256-gcm', key, iv);
+    const encrypted = Buffer.concat([cipher.update(JSON.stringify(records), 'utf8'), cipher.final()]);
+    const temp = `${filename}.${randomBytes(8).toString('hex')}.tmp`;
+    try {
+      await writeFile(temp, Buffer.concat([iv, cipher.getAuthTag(), encrypted]), { mode: 0o600, flag: 'wx' });
+      await rename(temp, filename);
+    } finally { await unlink(temp).catch(error => { if (error.code !== 'ENOENT') throw error; }); }
+  }
+  function serial(operation) {
+    const next = queue.then(operation);
+    queue = next.catch(() => {});
+    return next;
+  }
+  function find(records, id, revision) {
+    const index = records.findIndex(record => record.id === id);
+    if (index < 0) throw new StoreError(404, '该记录已被删除，请刷新列表。');
+    if (records[index].revision !== revision) throw new StoreError(409, '记录已在其他页面修改，请保留当前内容并刷新列表后重新编辑。');
+    return index;
+  }
+  return {
+    list: () => serial(read),
+    save: (record, { deduplicate = true } = {}) => serial(async () => {
+      const records = await read();
+      const duplicate = deduplicate && name === 'history' && records.find(item => item.original === record.original && item.result === record.result && (item.title || '') === (record.title || ''));
+      if (duplicate) return duplicate;
+      if (records.length >= 100) throw new StoreError(409, '已达到 100 条上限，请先删除不再需要的记录。');
+      const now = new Date().toISOString();
+      const next = { ...record, id: randomBytes(12).toString('hex'), revision: 1, createdAt: now, updatedAt: now };
+      await write([next, ...records]);
+      return next;
+    }),
+    update: (id, revision, record) => serial(async () => {
+      const records = await read();
+      const index = find(records, id, revision);
+      const next = { ...records[index], ...record, id, revision: revision + 1, createdAt: records[index].createdAt, updatedAt: new Date().toISOString() };
+      records[index] = next;
+      await write(records);
+      return next;
+    }),
+    remove: (id, revision) => serial(async () => {
+      const records = await read();
+      records.splice(find(records, id, revision), 1);
+      await write(records);
+    })
+  };
+}
+export const createHistory = (directory, keyHex) => createStore(directory, keyHex, 'history');
