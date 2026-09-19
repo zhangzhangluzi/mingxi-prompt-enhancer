@@ -32,6 +32,7 @@ let modelModules = [];
 let selectedModuleId = readPreference(preferenceKeys.module);
 let modelSnapshot = '';
 let modelTransitioning = false;
+let statusTimer;
 
 async function api(path, data, signal) {
   const generation = epoch;
@@ -45,6 +46,12 @@ async function api(path, data, signal) {
   return json;
 }
 function showError(message = '') { $('error').textContent = message; }
+function clearStatus() { clearTimeout(statusTimer); statusTimer = undefined; $('status').textContent = ''; }
+function showStatus(message, delay = 3000) {
+  clearStatus();
+  $('status').textContent = message;
+  if (message && delay > 0) statusTimer = setTimeout(clearStatus, delay);
+}
 function update() {
   const count = [...$('prompt').value].length;
   const overLimit = count > maxInput;
@@ -82,7 +89,7 @@ function lock() {
   $('result').hidden = true; $('empty-result').hidden = false;
   $('result-tag').textContent = '等待你的想法';
 
-  $('status').textContent = ''; showError();
+  clearStatus(); showError();
   $('workspace').hidden = true; $('logout').hidden = true; $('login-view').hidden = false;
   update();
 }
@@ -116,12 +123,11 @@ $('api-module-select').addEventListener('change', () => { selectedModuleId = $('
 async function loadModuleSelectors() { try { const data = await api('/api/models', undefined, AbortSignal.timeout(15000)); modelModules = data.modules || []; if (!selectedModuleId || !modelModules.some(m => m.id === selectedModuleId)) selectedModuleId = modelModules[0]?.id || ''; savePreference(preferenceKeys.module, selectedModuleId); renderModuleSelectors(); } catch (error) { if (authenticated) showError(error.message); } }
 async function enhance() {
   if (busy || !authenticated) return;
-  showError(); $('status').textContent = '';
+  showError(); clearStatus();
   const prompt = $('prompt').value;
   if (!prompt.trim()) { showError('请先输入需要增强的提示语。'); $('prompt').setAttribute('aria-invalid', 'true'); $('prompt').setAttribute('aria-describedby', 'input-help counter error'); $('prompt').focus(); return; }
   if ([...prompt].length > maxInput) { showError(`输入超过 ${maxInput.toLocaleString()} 个字符，请缩短后重试。`); $('prompt').focus(); return; }
   busy = true; request = new AbortController(); update();
-  $('status').textContent = '正在梳理任务与约束，通常需要几秒钟…';
   const timer = setTimeout(() => request.abort('timeout'), 55000);
   try {
     if (modelModules.length && !selectedModuleId) { showError('请先选择一个 API 模块。'); busy = false; request = null; update(); return; }
@@ -131,11 +137,11 @@ async function enhance() {
     $('result-title').value = ''; $('result-title-wrap').hidden = true;
     $('result').value = data.result; $('result').hidden = false; $('empty-result').hidden = true;
     $('result-tag').textContent = '可直接使用';
-    $('status').textContent = '增强完成。可以复制正文，或替换原文后继续编辑。';
+    showStatus('增强完成。');
   } catch (error) {
     if (!authenticated) { $('login-error').textContent = '登录已过期，请重新登录。'; return; }
-    if (request.signal.aborted) $('status').textContent = request.signal.reason === 'timeout' ? '请求超时，原文已保留。请重试。' : '已取消，原文已保留。';
-    else { $('status').textContent = ''; showError(error.message || '网络连接失败，请重试。'); }
+    if (request.signal.aborted) showStatus(request.signal.reason === 'timeout' ? '请求超时，原文已保留。请重试。' : '已取消，原文已保留。');
+    else { clearStatus(); showError(error.message || '网络连接失败，请重试。'); }
   } finally { clearTimeout(timer); busy = false; request = null; update(); }
 }
 $('enhance').addEventListener('click', enhance);
@@ -147,15 +153,15 @@ $('replace').addEventListener('click', async () => {
   if ($('prompt').value !== source && !await askConfirm('原文在增强后已修改，是否用增强结果替换？可通过“撤销替换”恢复当前内容。')) return;
   undoStack.push($('prompt').value); if (undoStack.length > 10) undoStack.shift();
   $('prompt').value = $('result').value; applied = true; update(); showError();
-  $('status').textContent = '已替换原文，可点击“撤销替换”回退。'; $('prompt').focus();
+  showStatus('已替换，可撤销。'); $('prompt').focus();
 });
 $('undo').addEventListener('click', () => {
   if (!undoStack.length || busy) return;
   $('prompt').value = undoStack.pop(); applied = false; update(); showError();
-  $('status').textContent = '已恢复替换前的原文。'; $('prompt').focus();
+  showStatus('已恢复原文。'); $('prompt').focus();
 });
 $('copy').addEventListener('click', async () => {
-  try { await navigator.clipboard.writeText($('result').value); $('status').textContent = '已复制提示语正文。'; }
+  try { await navigator.clipboard.writeText($('result').value); showStatus('复制成功', 1800); }
   catch { $('result').focus(); $('result').select(); showError('浏览器未允许自动复制，已选中正文，请按 Ctrl+C 或 ⌘C 复制。'); }
 });
 async function saveResult(asCopy = false) {
@@ -167,7 +173,7 @@ async function saveResult(asCopy = false) {
     const fields = { title: $('result-title').value, original: source, result: $('result').value, guideName: resultGuide, asCopy };
     const data = await api(previous && !asCopy ? '/api/history/update' : '/api/history', { ...fields, ...(previous && !asCopy ? { id: previous.id, revision: previous.revision } : {}) }, AbortSignal.timeout(15000));
     activeRecord = data.record;
-    $('status').textContent = previous && !asCopy ? '历史记录已更新。' : '原文与正文已加密保存。';
+    showStatus(previous && !asCopy ? '收藏已更新。' : '已保存到收藏。');
   } catch (error) { if (authenticated) showError(error.message); }
   finally { saving = false; update(); }
 }
@@ -257,7 +263,8 @@ function renderHistory() {
     const card = element('article', '', 'record-card'); const top = element('div', '', 'record-top');
     top.append(element('h3', r.title || '未命名收藏'), element('span', r.guideName || '通用增强', 'category-badge'));
     const actions = element('div', '', 'record-actions');
-    actions.append(action('载入迭代', () => restoreRecord(r)), action('编辑', () => openHistory(r)), action('复制正文', async () => { try { await navigator.clipboard.writeText(r.result); $('status').textContent = '已复制历史正文。'; } catch { openHistory(r); $('history-result').select(); $('history-form-error').textContent = '自动复制未获允许，已选中正文，请手动复制。'; } }), action('删除', () => removeRecord('history', r), 'danger-button'));
+    const copyButton = action('复制正文', async () => { try { await navigator.clipboard.writeText(r.result); const label = copyButton.textContent; copyButton.textContent = '已复制'; copyButton.disabled = true; setTimeout(() => { copyButton.textContent = label; copyButton.disabled = false; }, 1800); } catch { openHistory(r); $('history-result').select(); $('history-form-error').textContent = '自动复制未获允许，已选中正文，请手动复制。'; } });
+    actions.append(action('载入迭代', () => restoreRecord(r)), action('编辑', () => openHistory(r)), copyButton, action('删除', () => removeRecord('history', r), 'danger-button'));
     card.append(top, element('p', `${new Date(r.updatedAt || r.createdAt).toLocaleString()} · 版本 ${r.revision}`, 'small muted'), element('p', r.result.length > 220 ? r.result.slice(0, 220) + '…' : r.result, 'record-preview'), actions); list.append(card);
   }
 }
@@ -268,7 +275,7 @@ async function restoreRecord(record) {
   $('prompt').value = record.original; source = record.original; $('result').value = record.result; activeRecord = record; resultGuide = record.guideName || '';
   $('result-title').value = record.title || ''; $('result-title-wrap').hidden = true; applied = false;
   $('result').hidden = false; $('empty-result').hidden = true; $('result-tag').textContent = '可编辑 · 已保存记录';
-  showPanel('editor'); update(); suggestDirection(); $('status').textContent = '已载入。可以编辑正文并保存修改，或替换原文后再次增强。'; $('prompt').focus();
+  showPanel('editor'); update(); suggestDirection(); showStatus('已载入收藏。'); $('prompt').focus();
 }
 async function removeRecord(kind, record) {
   if (libraryBusy) return;
@@ -278,7 +285,6 @@ async function removeRecord(kind, record) {
     await api(`/api/${kind}/delete`, { id: record.id, revision: record.revision }, AbortSignal.timeout(15000));
     if (kind === 'history' && activeRecord?.id === record.id) { activeRecord = null; update(); }
     if (kind === 'guides') await loadGuides(); else await loadHistory();
-    $('status').textContent = '记录已删除。';
   } catch (error) { if (authenticated) showError(error.message); }
   finally { libraryBusy = false; }
 }
@@ -329,7 +335,6 @@ async function submitDialog(kind, event) {
     await api(`/api/${kind}${record ? '/update' : ''}`, { ...fields, ...(record ? { id: record.id, revision: record.revision } : {}) }, AbortSignal.timeout(15000));
     $(prefix + '-dialog').close();
     if (kind === 'guides') await loadGuides(); else { if (activeRecord?.id === record.id) { activeRecord = null; update(); } await loadHistory(); }
-    $('status').textContent = '修改已加密保存。';
   } catch (error) { if (authenticated) errorBox.textContent = error.message; }
   finally { modalBusy = false; $(prefix + '-submit').disabled = false; }
 }

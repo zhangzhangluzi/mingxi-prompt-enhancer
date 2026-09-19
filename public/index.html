@@ -23,7 +23,7 @@
         <button id="tab-models" type="button" data-panel="models">模型配置</button>
       </nav>
       <p id="model-notice" class="small muted" hidden>模型服务尚未配置。请在“模型配置”中填写服务商和密钥，指引管理和历史编辑可正常使用。</p>
-      <p id="error" class="error" role="alert"></p><p id="status" class="status small" role="status" aria-live="polite"></p>
+      <p id="error" class="error" role="alert"></p>
       <section id="editor-panel" aria-labelledby="tab-editor">
       <div class="direction-card">
         <div class="editor-select-field"><label for="api-module-select">API 模块</label><select id="api-module-select"><option value="">默认 API 模块</option></select></div>
@@ -35,6 +35,7 @@
         <section class="editor-card"><div class="card-heading"><div><span class="step">01</span><label for="prompt">你的提示语</label></div><button id="undo" class="text-button" disabled>撤销替换</button></div>
           <textarea id="prompt" spellcheck="false" placeholder="例如：帮我写一封给客户的邮件，说明项目延期两天，语气诚恳，控制在 200 字以内。" aria-describedby="input-help counter" dir="auto"></textarea>
           <div class="editor-bottom"><span id="input-help" class="small muted">保留原意 · 保留原语言</span><span id="counter" class="small muted">0 / 8,000</span></div>
+          <p id="status" class="status small" role="status" aria-live="polite"></p>
           <div class="action-bar"><button id="enhance" class="primary">增强提示语 <span aria-hidden="true">↗</span></button><button id="cancel" class="text-button" hidden>取消</button></div>
         </section>
         <section id="result-card" class="editor-card result-card" aria-busy="false"><div class="card-heading"><div><span class="step">02</span><label for="result">增强结果</label></div><span id="result-tag" class="small muted">等待你的想法</span></div>
