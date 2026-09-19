@@ -16,7 +16,6 @@ main{padding-top:16px;padding-bottom:12px}
 .direction-card{display:grid;grid-template-columns:auto minmax(220px,360px) 1fr auto;gap:4px 12px;align-items:center;padding:8px 14px;margin:8px 0 12px}
 .direction-card>label{font-size:14px;font-weight:600}
 .direction-card select{min-width:0;width:100%;margin:0}
-#manage-guides{grid-column:4;grid-row:1}
 #direction-suggestion{grid-column:3;grid-row:1}
 #direction-suggestion:empty{display:none}
 #direction-suggestion button{margin:0;min-height:44px}
@@ -47,7 +46,6 @@ footer p{margin:4px 0}
 @media(max-width:999px){
   .intro{flex-wrap:wrap;gap:2px}
   .direction-card{grid-template-columns:auto 1fr auto}
-  #manage-guides{grid-column:3}
   #direction-suggestion{grid-row:3;grid-column:1/-1}
 }
 @media(max-width:760px){
@@ -57,7 +55,6 @@ footer p{margin:4px 0}
   .intro p{font-size:13px}
   .direction-card{grid-template-columns:1fr auto;padding:10px 12px;gap:6px}
   .direction-card>label{grid-column:1;grid-row:1}
-  #manage-guides{grid-column:2;grid-row:1}
   .direction-card select{grid-column:1/-1;grid-row:2}
   #direction-suggestion{grid-row:4}
   .editor-grid{gap:12px}
@@ -81,9 +78,8 @@ footer p{margin:4px 0}
 .editor-select-field{display:flex;align-items:center;gap:10px;min-width:0;flex:0 1 400px}
 .editor-select-field label{font-size:14px;font-weight:600;white-space:nowrap}
 .direction-card .editor-select-field select{width:0;min-width:0;flex:1;margin:0}
-.direction-card #manage-guides{margin-left:auto;flex-shrink:0}
 .direction-card #direction-suggestion:empty{display:none}
-@media(max-width:760px){.editor-select-field{flex-basis:100%}.editor-select-field label{width:64px}.direction-card #manage-guides{margin-left:0}}
+@media(max-width:760px){.editor-select-field{flex-basis:100%}.editor-select-field label{width:64px}}
 .model-summary-list{display:grid;border:1px solid var(--line);border-radius:10px;overflow:hidden;margin-bottom:12px;background:var(--surface)}
 .model-summary-row{display:flex;align-items:center;gap:16px;padding:10px 16px;border-bottom:1px solid var(--line)}
 .model-summary-row:last-child{border-bottom:0}.model-summary-info{flex:1;min-width:0}.model-summary-info strong,.model-summary-info small{display:block;overflow-wrap:anywhere}.model-summary-info small{color:var(--muted)}
@@ -94,7 +90,6 @@ footer p{margin:4px 0}
 .editor-select-field label{color:var(--muted);font-size:12px;font-weight:650;letter-spacing:.02em}
 .direction-card .editor-select-field select{min-height:38px;border:0;border-radius:7px;background:transparent;padding:7px 28px 7px 8px;color:var(--ink);font-weight:550}
 .direction-card .editor-select-field select:focus-visible{outline:2px solid var(--ring);outline-offset:1px}
-.direction-card #manage-guides{padding:8px 10px}
 #direction-suggestion:not(:empty){flex-basis:100%;padding:5px 10px;border-radius:8px;background:var(--soft);color:var(--accent)}
 .action-bar{justify-content:flex-end}
 .model-card{max-width:980px;padding:14px 18px}

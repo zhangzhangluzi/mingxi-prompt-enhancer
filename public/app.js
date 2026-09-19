@@ -182,7 +182,6 @@ function showPanel(panel) {
   if (panel === 'models' && !modelConfig && !modelBusy) loadModel();
 }
 for (const button of document.querySelectorAll('[data-panel]')) button.addEventListener('click', () => showPanel(button.dataset.panel));
-$('manage-guides').addEventListener('click', () => showPanel('guides'));
 function element(tag, text, className) {
   const node = document.createElement(tag); if (text) node.textContent = text; if (className) node.className = className; return node;
 }
