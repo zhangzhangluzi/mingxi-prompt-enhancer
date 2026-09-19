@@ -1,4 +1,7 @@
 const $ = id => document.getElementById(id);
+const preferenceKeys = { module: 'mingxi.lastApiModule', direction: 'mingxi.lastDirection' };
+function readPreference(key) { try { return localStorage.getItem(key) || ''; } catch { return ''; } }
+function savePreference(key, value) { try { localStorage.setItem(key, value); } catch {} }
 let maxInput = 8000;
 let busy = false;
 let request;
@@ -26,7 +29,7 @@ let modelProviders = [];
 let modelBusy = false;
 let modelCatalog = [];
 let modelModules = [];
-let selectedModuleId = '';
+let selectedModuleId = readPreference(preferenceKeys.module);
 let modelSnapshot = '';
 let modelTransitioning = false;
 
@@ -64,7 +67,7 @@ function update() {
 }
 function lock() {
   authenticated = false; epoch++;
-  modelConfig = null; modelProviders = []; modelCatalog = []; modelModules = []; selectedModuleId = ''; modelSnapshot = ''; modelTransitioning = false; renderModelCatalog(); renderModuleSelectors(); $('model-form').reset(); $('model-provider').replaceChildren(); $('model-key-status').textContent = ''; $('model-feedback').textContent = ''; $('model-fields').disabled = true; $('model-editor').hidden = true;
+  modelConfig = null; modelProviders = []; modelCatalog = []; modelModules = []; selectedModuleId = readPreference(preferenceKeys.module); modelSnapshot = ''; modelTransitioning = false; renderModelCatalog(); renderModuleSelectors(); $('model-form').reset(); $('model-provider').replaceChildren(); $('model-key-status').textContent = ''; $('model-feedback').textContent = ''; $('model-fields').disabled = true; $('model-editor').hidden = true;
   settleConfirmation(false);
   for (const id of ['guide-dialog', 'history-dialog']) $(id).close();
   $('guide-form').reset(); $('history-form').reset();
@@ -109,8 +112,8 @@ $('logout').addEventListener('click', async () => {
   finally { $('logout').disabled = false; }
 });
 function renderModuleSelectors() { const select = $('api-module-select'); select.replaceChildren(new Option(modelModules.length ? '请选择 API 模块' : '默认 API 模块', '')); for (const item of modelModules) select.add(new Option(`${item.name} · ${item.model || '未选择模型'}`, item.id)); select.value = selectedModuleId; }
-$('api-module-select').addEventListener('change', () => { selectedModuleId = $('api-module-select').value; });
-async function loadModuleSelectors() { try { const data = await api('/api/models', undefined, AbortSignal.timeout(15000)); modelModules = data.modules || []; if (!selectedModuleId || !modelModules.some(m => m.id === selectedModuleId)) selectedModuleId = modelModules[0]?.id || ''; renderModuleSelectors(); } catch (error) { if (authenticated) showError(error.message); } }
+$('api-module-select').addEventListener('change', () => { selectedModuleId = $('api-module-select').value; savePreference(preferenceKeys.module, selectedModuleId); });
+async function loadModuleSelectors() { try { const data = await api('/api/models', undefined, AbortSignal.timeout(15000)); modelModules = data.modules || []; if (!selectedModuleId || !modelModules.some(m => m.id === selectedModuleId)) selectedModuleId = modelModules[0]?.id || ''; savePreference(preferenceKeys.module, selectedModuleId); renderModuleSelectors(); } catch (error) { if (authenticated) showError(error.message); } }
 async function enhance() {
   if (busy || !authenticated) return;
   showError(); $('status').textContent = '';
@@ -189,9 +192,10 @@ function action(text, onClick, className = 'secondary') {
   const button = element('button', text, className); button.type = 'button'; button.addEventListener('click', onClick); return button;
 }
 function directions() {
-  const selected = $('direction').value;
+  const selected = $('direction').value || readPreference(preferenceKeys.direction);
   $('direction').replaceChildren(new Option('通用增强 · 不指定方向', ''), ...guides.map(g => new Option(`${g.category} · ${g.name}`, g.id)));
   $('direction').value = guides.some(g => g.id === selected) ? selected : '';
+  savePreference(preferenceKeys.direction, $('direction').value);
   const category = $('guide-category').value;
   const categories = [...new Set(guides.map(g => g.category))];
   $('guide-category').replaceChildren(new Option('全部分类', ''), ...categories.map(c => new Option(c, c)));
@@ -209,9 +213,9 @@ function suggestDirection() {
   const guide = guides.find(g => g.id === id || g.name === id);
   const box = $('direction-suggestion'); box.replaceChildren();
   if (!text.trim() || !guide || guide.id === $('direction').value) return;
-  box.append(element('span', '根据关键词建议：'), action(guide.name, () => { $('direction').value = guide.id; directionHelp(); }, 'text-button'));
+  box.append(element('span', '根据关键词建议：'), action(guide.name, () => { $('direction').value = guide.id; savePreference(preferenceKeys.direction, guide.id); directionHelp(); }, 'text-button'));
 }
-$('direction').addEventListener('change', directionHelp);
+$('direction').addEventListener('change', () => { savePreference(preferenceKeys.direction, $('direction').value); directionHelp(); });
 async function loadGuides() {
   $('refresh-guides').disabled = true;
   try { const data = await api('/api/guides', undefined, AbortSignal.timeout(15000)); guides = data.records; directions(); renderGuides(); }
@@ -239,7 +243,7 @@ function renderGuides() {
     const card = element('article', '', 'record-card'); const top = element('div', '', 'record-top');
     top.append(element('h3', g.name), element('span', g.category, 'category-badge'));
     const actions = element('div', '', 'record-actions');
-    actions.append(action('使用指引', () => { if (busy) return showError('请等待当前增强完成。'); $('direction').value = g.id; directionHelp(); showPanel('editor'); $('prompt').focus(); }), action('编辑', () => openGuide(g)), action('删除', () => removeRecord('guides', g), 'danger-button'));
+    actions.append(action('使用指引', () => { if (busy) return showError('请等待当前增强完成。'); $('direction').value = g.id; savePreference(preferenceKeys.direction, g.id); directionHelp(); showPanel('editor'); $('prompt').focus(); }), action('编辑', () => openGuide(g)), action('删除', () => removeRecord('guides', g), 'danger-button'));
     card.append(top, element('p', g.description, 'record-preview'), element('p', g.instructions, 'record-preview'), actions); list.append(card);
   }
 }
@@ -403,7 +407,7 @@ async function loadModel() {
   modelBusy = true; $('model-editor').hidden = true; $('refresh-model').disabled = true; $('model-fields').disabled = true; modelFeedback('正在读取配置…');
   try {
     const data = await api('/api/models', undefined, AbortSignal.timeout(15000));
-    modelProviders = data.providers; modelModules = data.modules || []; renderSavedModules(); if (!selectedModuleId || !modelModules.some(m => m.id === selectedModuleId)) selectedModuleId = modelModules[0]?.id || ''; renderModuleSelectors(); $('model-provider').replaceChildren(...modelProviders.map(p => new Option(p.name, p.id)));
+    modelProviders = data.providers; modelModules = data.modules || []; renderSavedModules(); if (!selectedModuleId || !modelModules.some(m => m.id === selectedModuleId)) selectedModuleId = modelModules[0]?.id || ''; savePreference(preferenceKeys.module, selectedModuleId); renderModuleSelectors(); $('model-provider').replaceChildren(...modelProviders.map(p => new Option(p.name, p.id)));
     displayModel(data.config); $('model-fields').disabled = !data.editable;
     modelFeedback(data.editable ? '填写地址与密钥后拉取模型，选择并保存即可使用。' : '管理员尚未启用持久化配置。');
   } catch (error) { if (authenticated) modelFeedback(error.message, true); }
@@ -412,7 +416,7 @@ async function loadModel() {
 $('refresh-model').addEventListener('click', async () => {
   await guardModelDraft(loadModel);
 });
-$('model-delete').addEventListener('click', async () => { if (!modelConfig || modelBusy) return; if (!await askConfirm(`确定删除 API 模块“${modelConfig.name || '未命名'}”？`)) return; const deletedId = modelConfig.id; modelBusy = true; try { const data = await api('/api/models/delete', { id: deletedId, revision: modelConfig.revision }, AbortSignal.timeout(15000)); modelModules = data.modules || []; if (selectedModuleId === deletedId || !modelModules.some(item => item.id === selectedModuleId)) selectedModuleId = modelModules[0]?.id || ''; renderModuleSelectors(); modelConfig = modelModules[0] || null; if (modelConfig) displayModel(modelConfig); else { $('model-form').reset(); modelCatalog = []; renderModelCatalog(); } $('model-editor').hidden = true; modelFeedback('API 模块已删除。'); } catch (error) { modelFeedback(error.message, true); } finally { modelBusy = false; } });
+$('model-delete').addEventListener('click', async () => { if (!modelConfig || modelBusy) return; if (!await askConfirm(`确定删除 API 模块“${modelConfig.name || '未命名'}”？`)) return; const deletedId = modelConfig.id; modelBusy = true; try { const data = await api('/api/models/delete', { id: deletedId, revision: modelConfig.revision }, AbortSignal.timeout(15000)); modelModules = data.modules || []; if (selectedModuleId === deletedId || !modelModules.some(item => item.id === selectedModuleId)) selectedModuleId = modelModules[0]?.id || ''; savePreference(preferenceKeys.module, selectedModuleId); renderModuleSelectors(); modelConfig = modelModules[0] || null; if (modelConfig) displayModel(modelConfig); else { $('model-form').reset(); modelCatalog = []; renderModelCatalog(); } $('model-editor').hidden = true; modelFeedback('API 模块已删除。'); } catch (error) { modelFeedback(error.message, true); } finally { modelBusy = false; } });
 $('model-provider').addEventListener('change', () => {
   const preset = modelProviders.find(p => p.id === $('model-provider').value);
   if (preset) { $('model-base').value = preset.baseURL; $('model-protocol').value = preset.protocol; modelCatalog = []; renderModelCatalog(); $('model-key').value = ''; modelFeedback('请填写密钥，再点击“拉取模型列表”。'); }
@@ -456,7 +460,7 @@ $('model-form').addEventListener('submit', async event => {
   event.preventDefault(); if (modelBusy) return;
   const input = { ...(modelConfig?.id ? { id: modelConfig.id } : {}), revision: modelConfig?.revision || 1, name: $('model-module-name').value.trim(), protocol: $('model-protocol').value, baseURL: $('model-base').value.trim(), model: $('model-name').value.trim(), apiKey: $('model-key').value.trim(), models: modelCatalog };
   modelBusy = true; $('model-fields').disabled = true; $('refresh-model').disabled = true; modelFeedback('正在加密保存…');
-  try { const data = await api(modelConfig?.id ? '/api/models/update' : '/api/models', input, AbortSignal.timeout(15000)); const saved = data.module || data.config; displayModel(saved); modelModules = data.modules || modelModules; renderSavedModules(); selectedModuleId = saved?.id || selectedModuleId; renderModuleSelectors(); modelFeedback(saved.ready ? '配置和模型列表已保存。可测试连接后开始增强。' : '连接信息和列表已保存。选择模型并保存后才能增强。'); }
+  try { const data = await api(modelConfig?.id ? '/api/models/update' : '/api/models', input, AbortSignal.timeout(15000)); const saved = data.module || data.config; displayModel(saved); modelModules = data.modules || modelModules; renderSavedModules(); selectedModuleId = saved?.id || selectedModuleId; savePreference(preferenceKeys.module, selectedModuleId); renderModuleSelectors(); modelFeedback(saved.ready ? '配置和模型列表已保存。可测试连接后开始增强。' : '连接信息和列表已保存。选择模型并保存后才能增强。'); }
   catch (error) { if (authenticated) modelFeedback(error.message, true); }
   finally { $('model-key').value = ''; modelBusy = false; $('model-fields').disabled = !authenticated; $('refresh-model').disabled = false; }
 });
