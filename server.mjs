@@ -104,7 +104,7 @@ export async function createApp(config, fetchModel = safeModelFetch) {
   const currentModel = async (id = '') => { const records = await listModels(); if (id) return records.find(item => item.id === id); return records[0] || initialModel; };
   const storageReady = async () => {
     try {
-      await Promise.all([credentials ? credentials.get() : Promise.resolve(), listModels(), guides ? guides.list() : Promise.resolve(), history ? history.list() : Promise.resolve()]);
+      await Promise.all([credentials ? credentials.get() : Promise.resolve(), modelStore ? modelStore.verify() : Promise.resolve(), guides ? guides.verify() : Promise.resolve(), history ? history.verify() : Promise.resolve()]);
       return true;
     } catch { return false; }
   };

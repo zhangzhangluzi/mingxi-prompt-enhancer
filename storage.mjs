@@ -28,14 +28,21 @@ export async function createStore(directory, keyHex, name, defaults = []) {
   const key = Buffer.from(keyHex, 'hex');
   const filename = join(directory, `${name}.enc`);
   let queue = Promise.resolve();
-  async function read() {
+  let cache;
+  async function read(fresh = false) {
+    if (!fresh && cache) return structuredClone(cache);
     let bytes;
-    try { bytes = await readFile(filename); } catch (error) { if (error.code === 'ENOENT') return structuredClone(defaults); throw error; }
+    try { bytes = await readFile(filename); } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      cache = structuredClone(defaults);
+      return structuredClone(cache);
+    }
     const decrypt = createDecipheriv('aes-256-gcm', key, bytes.subarray(0, 12));
     decrypt.setAuthTag(bytes.subarray(12, 28));
     const records = JSON.parse(Buffer.concat([decrypt.update(bytes.subarray(28)), decrypt.final()]).toString('utf8'));
     if (!Array.isArray(records)) throw new Error('存储格式无效。');
-    return records.map(record => ({ revision: 1, updatedAt: record.createdAt, ...record }));
+    cache = records.map(record => ({ revision: 1, updatedAt: record.createdAt, ...record }));
+    return structuredClone(cache);
   }
   async function write(records) {
     const json = assertStoreCapacity(name, records);
@@ -46,6 +53,7 @@ export async function createStore(directory, keyHex, name, defaults = []) {
     try {
       await writeFile(temp, Buffer.concat([iv, cipher.getAuthTag(), encrypted]), { mode: 0o600, flag: 'wx' });
       await rename(temp, filename);
+      cache = structuredClone(records);
     } finally { await unlink(temp).catch(error => { if (error.code !== 'ENOENT') throw error; }); }
   }
   function serial(operation) {
@@ -61,6 +69,7 @@ export async function createStore(directory, keyHex, name, defaults = []) {
   }
   return {
     list: () => serial(read),
+    verify: () => serial(() => read(true)).then(() => undefined),
     replaceAll: records => serial(async () => {
       if (!Array.isArray(records)) throw new StoreError(400, '导入数据必须是数组。');
       if (records.length > 100) throw new StoreError(409, '每个模块最多保留 100 条记录。');
