@@ -60,7 +60,7 @@ async function api(path, data, signal) {
   const json = await response.json();
   if (generation !== epoch) throw new Error('会话已改变，请重试。');
   if (!response.ok) {
-    if (response.status === 401 && !['/api/login', '/api/password', '/api/data/export'].includes(path)) lock(true);
+    if (response.status === 401 && !['/api/login', '/api/password'].includes(path)) lock(true);
     throw new Error(json.error || '请求失败，请稍后重试。');
   }
   return json;

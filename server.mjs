@@ -252,7 +252,7 @@ export async function createApp(config, fetchModel = safeModelFetch) {
           if (req.method !== 'POST') throw new HttpError(405, '请求方法不支持。');
           limit(`export:${token}`, 5, 60000);
           const { password } = await bodyJSON(req, 2048);
-          if (!await verifyPassword(password, passwordHash)) throw new HttpError(401, '当前密码错误。');
+          if (!await verifyPassword(password, passwordHash)) throw new HttpError(403, '当前密码错误。');
           const payload = await serializeData(async () => createTransfer(
             guides ? await guides.list() : DEFAULT_GUIDES,
             history ? await history.list() : [],

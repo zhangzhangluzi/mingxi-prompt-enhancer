@@ -140,9 +140,9 @@ test('健康检查支持 GET/HEAD，readiness 在存储损坏时失败，静态�
   response = await call('/health/ready'); assert.equal(response.status, 200); assert.deepEqual(await response.json(), { status: 'ready' });
   response = await fetch(`${base}/`, { method: 'HEAD' }); assert.equal(response.status, 200); assert.equal(await response.text(), ''); assert.match(response.headers.get('content-type'), /text\/html/);
   assert.equal(response.headers.get('cache-control'), 'no-store');
-  response = await fetch(`${base}/app.js?v=2.2.4`, { method: 'HEAD' }); assert.equal(response.status, 200); assert.equal(response.headers.get('cache-control'), 'public, max-age=31536000, immutable');
+  response = await fetch(`${base}/app.js?v=2.2.5`, { method: 'HEAD' }); assert.equal(response.status, 200); assert.equal(response.headers.get('cache-control'), 'public, max-age=31536000, immutable');
   response = await fetch(`${base}/app.js`, { method: 'HEAD' }); assert.equal(response.status, 200); assert.equal(response.headers.get('cache-control'), 'no-store');
-  response = await fetch(`${base}/favicon.svg?v=2.2.4`); assert.equal(response.status, 200); assert.match(response.headers.get('content-type'), /image\/svg\+xml/); assert.equal(response.headers.get('cache-control'), 'public, max-age=31536000, immutable'); assert.match(await response.text(), />明<\/text>/);
+  response = await fetch(`${base}/favicon.svg?v=2.2.5`); assert.equal(response.status, 200); assert.match(response.headers.get('content-type'), /image\/svg\+xml/); assert.equal(response.headers.get('cache-control'), 'public, max-age=31536000, immutable'); assert.match(await response.text(), />明<\/text>/);
   await login(); await call('/api/history', { original: '原文', result: '结果' });
   await writeFile(join(dir, 'history.enc'), 'corrupted');
   response = await call('/health/ready'); assert.equal(response.status, 503); assert.deepEqual(await response.json(), { status: 'unavailable' });
@@ -279,7 +279,7 @@ test('导出包含三个模块，导入仅覆盖勾选模块且重复执行幂�
   assert.equal((await call('/api/data/import', { payload: {}, modules: ['guides'] })).status, 401);
   await login();
   assert.equal((await call('/api/data/export')).status, 405);
-  assert.equal((await call('/api/data/export', { password: 'wrong-export-password-123456' })).status, 401);
+  assert.equal((await call('/api/data/export', { password: 'wrong-export-password-123456' })).status, 403);
   await call('/api/history', { title: '', original: '原收藏', result: '原正文' });
   const before = await (await call('/api/data/export', { password })).json();
   assert.equal(before.format, 'mingxi-data-export'); assert.equal(before.version, 1);
