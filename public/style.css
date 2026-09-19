@@ -97,3 +97,19 @@ button:active:not(:disabled){filter:brightness(.95)}
 @media(max-width:760px){.workspace-nav{gap:2px}.workspace-nav button{padding:10px 8px;font-size:13px}}
 .editor-card>.status{min-height:0;margin:0 16px 8px;padding:6px 10px;border-radius:7px;background:var(--soft);color:var(--accent)}
 .editor-card>.status:empty{display:none}
+.view-switch{display:inline-flex;align-items:center;padding:3px;border:1px solid var(--line);border-radius:9px;background:var(--bg);flex-shrink:0}
+.view-switch button{min-height:34px;padding:5px 12px;border-radius:6px;background:transparent;color:var(--muted);font-size:13px}
+.view-switch button:hover{color:var(--accent);background:var(--soft)}
+.view-switch button[aria-pressed=true]{color:var(--accent);background:var(--surface);box-shadow:0 1px 4px #18312b14;font-weight:650}
+.list-tools .view-switch{margin-left:auto}.model-page-actions{align-items:center;flex-wrap:wrap}.model-page-actions .view-switch{margin-right:auto}
+.management-list[data-view=list]{grid-template-columns:1fr}
+.management-list[data-view=grid]{grid-template-columns:repeat(auto-fill,minmax(320px,1fr));align-items:stretch}
+.management-list[data-view=grid] .record-card{height:100%;display:flex;flex-direction:column}
+#history-list.management-list[data-view=grid] .record-card{display:flex}
+.management-list[data-view=grid] .record-actions{margin-top:auto}
+.management-list[data-view=grid] .empty-list{grid-column:1/-1}
+.model-summary-list[data-view=grid]{grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px;border:0;background:transparent;overflow:visible}
+.model-summary-list[data-view=grid] .model-summary-row{height:100%;align-items:stretch;flex-direction:column;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+.model-summary-list[data-view=grid] .model-summary-row:last-child{border-bottom:1px solid var(--line)}
+.model-summary-list[data-view=grid] .record-actions{margin-top:auto}
+@media(max-width:760px){.list-tools .view-switch{margin-left:0}.view-switch button{padding-left:10px;padding-right:10px}.model-page-actions{gap:8px}.management-list[data-view=grid],.model-summary-list[data-view=grid]{grid-template-columns:1fr}}

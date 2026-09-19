@@ -1,7 +1,18 @@
 const $ = id => document.getElementById(id);
-const preferenceKeys = { module: 'mingxi.lastApiModule', direction: 'mingxi.lastDirection' };
+const preferenceKeys = { module: 'mingxi.lastApiModule', direction: 'mingxi.lastDirection', guideView: 'mingxi.guideView', historyView: 'mingxi.historyView', modelView: 'mingxi.modelView' };
 function readPreference(key) { try { return localStorage.getItem(key) || ''; } catch { return ''; } }
 function savePreference(key, value) { try { localStorage.setItem(key, value); } catch {} }
+const viewTargets = { guides: ['guide-list', preferenceKeys.guideView], history: ['history-list', preferenceKeys.historyView], models: ['model-summary-list', preferenceKeys.modelView] };
+function setViewMode(scope, mode) {
+  const [targetId, storageKey] = viewTargets[scope] || [];
+  if (!targetId) return;
+  const selected = mode === 'grid' ? 'grid' : 'list';
+  $(targetId).dataset.view = selected;
+  for (const button of document.querySelectorAll(`[data-view-scope="${scope}"]`)) button.setAttribute('aria-pressed', String(button.dataset.viewMode === selected));
+  savePreference(storageKey, selected);
+}
+for (const button of document.querySelectorAll('[data-view-scope]')) button.addEventListener('click', () => setViewMode(button.dataset.viewScope, button.dataset.viewMode));
+for (const [scope, [, storageKey]] of Object.entries(viewTargets)) setViewMode(scope, readPreference(storageKey));
 let maxInput = 8000;
 let busy = false;
 let request;

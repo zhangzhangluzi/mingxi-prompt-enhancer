@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light"><title>明晰 · 提示语工作台</title>
-  <link rel="stylesheet" href="/style.css"><script src="/app.js" type="module"></script>
+  <link rel="stylesheet" href="/style.css?v=1.7.0"><script src="/app.js?v=1.7.0" type="module"></script>
 </head>
 <body>
   <header><a class="brand" href="/" aria-label="明晰首页"><span class="brand-mark" aria-hidden="true">明</span>明晰 <span class="brand-sub">提示语工作台</span></a><div class="header-right"><span class="private">私人工作空间</span><button id="logout" class="text-button" hidden>退出登录</button></div></header>
@@ -46,16 +46,16 @@
       </div>
       </section>
       <section id="guides-panel" aria-labelledby="tab-guides" hidden>
-        <div class="list-tools"><label class="sr-only" for="guide-search">搜索指引</label><input id="guide-search" type="search" placeholder="搜索名称、分类或指引内容"><label class="sr-only" for="guide-category">按分类筛选</label><select id="guide-category"><option value="">全部分类</option></select><button id="refresh-guides" class="secondary">刷新列表</button><button id="new-guide" class="primary">新增指引</button></div>
-        <p id="guide-count" class="small muted"></p><div id="guide-list" class="management-list"></div>
+        <div class="list-tools"><label class="sr-only" for="guide-search">搜索指引</label><input id="guide-search" type="search" placeholder="搜索名称、分类或指引内容"><label class="sr-only" for="guide-category">按分类筛选</label><select id="guide-category"><option value="">全部分类</option></select><button id="refresh-guides" class="secondary">刷新列表</button><button id="new-guide" class="primary">新增指引</button><div class="view-switch" role="group" aria-label="指引展示方式"><button type="button" data-view-scope="guides" data-view-mode="list" aria-pressed="true">列表</button><button type="button" data-view-scope="guides" data-view-mode="grid" aria-pressed="false">宫格</button></div></div>
+        <p id="guide-count" class="small muted"></p><div id="guide-list" class="management-list" data-view="list"></div>
       </section>
       <section id="history-panel" aria-labelledby="tab-history" hidden>
-        <div class="list-tools history-tools"><label class="sr-only" for="history-search">搜索历史提示语</label><input id="history-search" type="search" placeholder="搜索标题、原文或增强正文"><button id="refresh-history" class="secondary">刷新收藏</button></div>
-        <p id="history-count" class="small muted"></p><div id="history-list" class="management-list"></div>
+        <div class="list-tools history-tools"><label class="sr-only" for="history-search">搜索历史提示语</label><input id="history-search" type="search" placeholder="搜索标题、原文或增强正文"><button id="refresh-history" class="secondary">刷新收藏</button><div class="view-switch" role="group" aria-label="收藏展示方式"><button type="button" data-view-scope="history" data-view-mode="list" aria-pressed="true">列表</button><button type="button" data-view-scope="history" data-view-mode="grid" aria-pressed="false">宫格</button></div></div>
+        <p id="history-count" class="small muted"></p><div id="history-list" class="management-list" data-view="list"></div>
       </section>
       <section id="models-panel" aria-labelledby="tab-models" hidden>
-        <div class="model-page-actions"><button id="refresh-model" class="secondary">刷新配置</button><button id="model-create" type="button" class="primary">新建 API 模块</button></div>
-        <div id="model-summary-list" class="model-summary-list" aria-label="已保存的 API 模块列表"></div>
+        <div class="model-page-actions"><div class="view-switch" role="group" aria-label="模型配置展示方式"><button type="button" data-view-scope="models" data-view-mode="list" aria-pressed="true">列表</button><button type="button" data-view-scope="models" data-view-mode="grid" aria-pressed="false">宫格</button></div><button id="refresh-model" class="secondary">刷新配置</button><button id="model-create" type="button" class="primary">新建 API 模块</button></div>
+        <div id="model-summary-list" class="model-summary-list" data-view="list" aria-label="已保存的 API 模块列表"></div>
         <details id="model-editor" hidden><summary class="model-editor-toggle">配置详情</summary>
         <form id="model-form" class="model-card" autocomplete="off">
           <fieldset id="model-fields" disabled>
