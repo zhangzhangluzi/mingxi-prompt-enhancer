@@ -113,7 +113,7 @@ export async function createApp(config, fetchModel = safeModelFetch) {
     const { models, ...summary } = safeModel(item);
     return summary;
   };
-  const files = new Map(await Promise.all(['index.html', 'style.css', 'app.js'].map(async name => [name, await readFile(new URL(`./public/${name}`, import.meta.url))])));
+  const files = new Map(await Promise.all(['index.html', 'style.css', 'app.js', 'favicon.svg'].map(async name => [name, await readFile(new URL(`./public/${name}`, import.meta.url))])));
   const sessions = new Map();
   const attempts = new Map();
   let active = 0;
@@ -449,9 +449,9 @@ export async function createApp(config, fetchModel = safeModelFetch) {
       } else if (['/app', '/app/editor', '/app/guides', '/app/history', '/app/models', '/app/data'].includes(path)) {
         if (!passwordHash) return redirect('/setup');
         if (!session) return redirect('/login');
-      } else if (!['/style.css', '/app.js'].includes(path)) throw new HttpError(404, '页面不存在。');
-      const name = ['/style.css', '/app.js'].includes(path) ? path.slice(1) : 'index.html';
-      const type = { 'index.html': 'text/html', 'style.css': 'text/css', 'app.js': 'text/javascript' }[name];
+      } else if (!['/style.css', '/app.js', '/favicon.svg'].includes(path)) throw new HttpError(404, '页面不存在。');
+      const name = ['/style.css', '/app.js', '/favicon.svg'].includes(path) ? path.slice(1) : 'index.html';
+      const type = { 'index.html': 'text/html', 'style.css': 'text/css', 'app.js': 'text/javascript', 'favicon.svg': 'image/svg+xml' }[name];
       if (name !== 'index.html' && requestURL.searchParams.has('v')) res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
       res.writeHead(200, { 'Content-Type': `${type}; charset=utf-8`, 'Content-Length': files.get(name).length });
       res.end(req.method === 'HEAD' ? undefined : files.get(name));
