@@ -45,6 +45,13 @@ export async function createStore(directory, keyHex, name, defaults = []) {
   }
   return {
     list: () => serial(read),
+    replaceAll: records => serial(async () => {
+      if (!Array.isArray(records)) throw new StoreError(400, '导入数据必须是数组。');
+      if (records.length > 100) throw new StoreError(409, '每个模块最多保留 100 条记录。');
+      const next = structuredClone(records);
+      await write(next);
+      return structuredClone(next);
+    }),
     save: (record, { deduplicate = true } = {}) => serial(async () => {
       const records = await read();
       const duplicate = deduplicate && name === 'history' && records.find(item => item.original === record.original && item.result === record.result && (item.title || '') === (record.title || ''));

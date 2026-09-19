@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light"><title>明晰 · 提示语工作台</title>
-  <link rel="stylesheet" href="/style.css?v=2.0.0"><script src="/app.js?v=2.0.0" type="module"></script>
+  <link rel="stylesheet" href="/style.css?v=2.1.0"><script src="/app.js?v=2.1.0" type="module"></script>
 </head>
 <body>
   <header><a class="brand" href="/" aria-label="明晰首页"><span class="brand-mark" aria-hidden="true">明</span>明晰 <span class="brand-sub">提示语工作台</span></a><div class="header-right"><span class="private">私人工作空间</span><button id="change-password" class="text-button" hidden>修改密码</button><button id="logout" class="text-button" hidden>退出登录</button></div></header>
@@ -31,6 +31,7 @@
         <button id="tab-guides" type="button" data-panel="guides">指引管理</button>
         <button id="tab-history" type="button" data-panel="history">已收藏</button>
         <button id="tab-models" type="button" data-panel="models">模型配置</button>
+        <button id="tab-data" type="button" data-panel="data">导入导出</button>
       </nav>
       <p id="model-notice" class="small muted" hidden>模型服务尚未配置。请在“模型配置”中填写服务商和密钥，指引管理和历史编辑可正常使用。</p>
       <p id="error" class="error" role="alert"></p>
@@ -84,6 +85,29 @@
           <p class="small muted">密钥在服务器加密存储，保存后不会回传。拥有网站访问密码的人可管理配置。连接测试会向所选服务商发送固定短句，可能产生少量费用。</p>
         </form>
         </details>
+      </section>
+      <section id="data-panel" aria-labelledby="tab-data" hidden>
+        <div class="transfer-grid">
+          <section class="transfer-card" aria-labelledby="export-heading">
+            <div class="transfer-heading"><div><h2 id="export-heading">导出数据</h2><p class="small muted">包含指引、已收藏和模型配置。</p></div><button id="export-refresh" type="button" class="secondary">重新生成</button></div>
+            <label class="sr-only" for="export-json">导出的 JSON 内容</label>
+            <textarea id="export-json" class="json-box" readonly spellcheck="false" aria-describedby="export-warning export-status"></textarea>
+            <p id="export-warning" class="small muted">导出内容包含模型 API 密钥，请仅在受信任的环境中保存和使用。</p>
+            <div class="transfer-actions"><button id="export-copy" type="button" class="primary" disabled>复制 JSON</button><p id="export-status" class="inline-feedback small" role="status" aria-live="polite"></p></div>
+          </section>
+          <section class="transfer-card" aria-labelledby="import-heading">
+            <div class="transfer-heading"><div><h2 id="import-heading">导入数据</h2><p class="small muted">粘贴由本系统导出的 JSON。</p></div></div>
+            <label class="sr-only" for="import-json">要导入的 JSON 内容</label>
+            <textarea id="import-json" class="json-box" spellcheck="false" placeholder="在此粘贴 JSON"></textarea>
+            <div class="transfer-actions"><button id="import-parse" type="button" class="secondary">解析 JSON</button><p id="import-status" class="inline-feedback small" role="status" aria-live="polite"></p></div>
+            <fieldset id="import-modules" class="import-modules" hidden><legend>选择要覆盖导入的模块</legend>
+              <label><input type="checkbox" value="guides"> <span>指引</span><small id="import-guides-count"></small></label>
+              <label><input type="checkbox" value="favorites"> <span>已收藏</span><small id="import-favorites-count"></small></label>
+              <label><input type="checkbox" value="models"> <span>模型配置</span><small id="import-models-count"></small></label>
+            </fieldset>
+            <div id="import-submit-wrap" class="transfer-submit" hidden><p class="small muted">导入会完整覆盖勾选模块的当前数据；未勾选模块保持不变。</p><button id="import-submit" type="button" class="primary">导入所选模块</button></div>
+          </section>
+        </div>
       </section>
       <dialog id="guide-dialog" aria-labelledby="guide-dialog-title">
         <form id="guide-form"><div class="manager-heading"><h2 id="guide-dialog-title">新增指引</h2><button type="button" class="text-button" data-close="guide-dialog">关闭</button></div>

@@ -33,7 +33,7 @@ test('首次初始化、页面路由守卫、密码修改及凭据重启回读',
   const first = await fixture(t, undefined, { dataDir: dir, storageKey, passwordHash: '' });
   let session = await (await first.call('/api/session')).json();
   assert.equal(session.initialized, false); assert.equal(session.authenticated, false);
-  for (const [path, location] of [['/', '/setup'], ['/login', '/setup'], ['/app', '/setup'], ['/app/guides', '/setup'], ['/app/history', '/setup'], ['/app/models', '/setup']]) {
+  for (const [path, location] of [['/', '/setup'], ['/login', '/setup'], ['/app', '/setup'], ['/app/guides', '/setup'], ['/app/history', '/setup'], ['/app/models', '/setup'], ['/app/data', '/setup']]) {
     const response = await fetch(first.base + path, { redirect: 'manual' });
     assert.equal(response.status, 302); assert.equal(response.headers.get('location'), location);
   }
@@ -46,7 +46,7 @@ test('首次初始化、页面路由守卫、密码修改及凭据重启回读',
   assert.equal((await fetch(first.base + '/setup', { redirect: 'manual', headers: { Cookie: response.headers.get('set-cookie')?.split(';')[0] || '' } })).headers.get('location'), '/app');
   assert.equal((await first.call('/app')).status, 200);
   first.clearCookie();
-  for (const path of ['/app', '/app/editor', '/app/guides', '/app/history', '/app/models']) {
+  for (const path of ['/app', '/app/editor', '/app/guides', '/app/history', '/app/models', '/app/data']) {
     response = await fetch(first.base + path, { redirect: 'manual' });
     assert.equal(response.status, 302); assert.equal(response.headers.get('location'), '/login');
   }
@@ -255,4 +255,55 @@ test('多个 API 模块可保存、自定义名称可回读，增强按 moduleId
   assert.equal((await call('/api/enhance',{prompt:'使用备用模块',moduleId:module.module.id})).status,200); assert.deepEqual(used,['second-model']);
   const response=await call('/api/enhance',{prompt:'使用默认模块',moduleId:list.modules.find(x=>x.name==='环境默认模块').id}); assert.equal(response.status,200); assert.deepEqual(used,['second-model','default-model']);
   const deleted=await call('/api/models/delete',{id:module.module.id,revision:module.module.revision}); assert.equal(deleted.status,200); assert.equal((await (await call('/api/models')).json()).modules.length,1);
+});
+
+test('导出包含三个模块，导入仅覆盖勾选模块且重复执行幂等', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'prompt-transfer-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  let used;
+  const { call, login } = await fixture(t, async (url, options) => {
+    used = { url, authorization: options.headers.Authorization, model: JSON.parse(options.body).model };
+    return Response.json({ choices: [{ finish_reason: 'stop', message: { content: '导入配置已调用' } }] });
+  }, { dataDir: dir, storageKey: '6'.repeat(64) });
+  assert.equal((await call('/api/data/export')).status, 401);
+  assert.equal((await call('/api/data/import', { payload: {}, modules: ['guides'] })).status, 401);
+  await login();
+  await call('/api/history', { title: '', original: '原收藏', result: '原正文' });
+  const before = await (await call('/api/data/export')).json();
+  assert.equal(before.format, 'mingxi-data-export'); assert.equal(before.version, 1);
+  assert.equal(before.data.guides.length, 8); assert.equal(before.data.favorites.length, 1); assert.equal(before.data.models.length, 1);
+  assert.equal(before.data.models[0].apiKey, 'secret-server-only');
+  assert.ok(!JSON.stringify(before).includes(password));
+
+  const payload = structuredClone(before), now = '2026-09-19T08:00:00.000Z';
+  payload.data.guides = [{ id: 'import-guide', revision: 4, createdAt: now, updatedAt: now, name: '恢复指引', category: '导入', description: '导入说明', instructions: '仅保留用户约束。' }];
+  payload.data.favorites = [{ id: 'import-favorite', revision: 2, createdAt: now, updatedAt: now, title: '', original: '导入原文', result: '导入正文', guideName: '恢复指引' }];
+  payload.data.models = [{ id: 'import-model', revision: 3, createdAt: now, updatedAt: now, name: '恢复 API', protocol: 'chat', baseURL: 'https://restored.example/v1', apiKey: 'restored-key', model: 'restored-model', models: ['restored-model'] }];
+
+  let response = await call('/api/data/import', { payload, modules: ['favorites'] }, { Origin: 'https://evil.example' });
+  assert.equal(response.status, 403);
+  response = await call('/api/data/import', { payload, modules: ['favorites'] });
+  assert.equal(response.status, 200); assert.deepEqual((await response.json()).imported, { favorites: 1 });
+  let exported = await (await call('/api/data/export')).json();
+  assert.deepEqual(exported.data.guides, before.data.guides);
+  assert.deepEqual(exported.data.models, before.data.models);
+  assert.deepEqual(exported.data.favorites, payload.data.favorites);
+
+  const invalid = structuredClone(payload); invalid.data.guides.push({ ...invalid.data.guides[0] });
+  response = await call('/api/data/import', { payload: invalid, modules: ['favorites'] });
+  assert.equal(response.status, 400); assert.match(await response.text(), /重复的记录 ID/);
+  assert.deepEqual((await (await call('/api/data/export')).json()).data.favorites, payload.data.favorites);
+
+  response = await call('/api/data/import', { payload, modules: ['guides', 'favorites', 'models'] });
+  assert.equal(response.status, 200);
+  response = await call('/api/data/import', { payload, modules: ['guides', 'favorites', 'models'] });
+  assert.equal(response.status, 200);
+  exported = await (await call('/api/data/export')).json();
+  assert.deepEqual(exported.data, payload.data);
+  const modules = await (await call('/api/models')).json();
+  assert.equal(modules.modules[0].name, '恢复 API'); assert.equal(modules.modules[0].hasKey, true);
+  assert.ok(!JSON.stringify(modules).includes('restored-key'));
+  response = await call('/api/enhance', { prompt: '使用恢复模型', moduleId: 'import-model' });
+  assert.equal(response.status, 200);
+  assert.deepEqual(used, { url: 'https://restored.example/v1/chat/completions', authorization: 'Bearer restored-key', model: 'restored-model' });
 });

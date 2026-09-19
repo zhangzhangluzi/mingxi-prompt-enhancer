@@ -69,3 +69,32 @@ test('旧版历史无损读取，更新持久化、并发编辑拒绝覆盖，�
   await guides.remove('builtin', 1);
   assert.deepEqual(await (await createStore(dir, key, 'guides', defaults)).list(), []);
 });
+
+test('整体替换会原子持久化并保持加密与权限', async t => {
+  const { createStore } = await import('../storage.mjs');
+  const dir = await mkdtemp(join(tmpdir(), 'prompt-replace-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const key = 'e'.repeat(64), store = await createStore(dir, key, 'guides');
+  const records = [{ id: 'imported-guide', revision: 3, createdAt: '2026-09-01T00:00:00.000Z', updatedAt: '2026-09-02T00:00:00.000Z', name: '导入指引', category: '测试', description: '说明', instructions: '内容' }];
+  await store.replaceAll(records);
+  records[0].name = '外部篡改';
+  assert.equal((await store.list())[0].name, '导入指引');
+  assert.deepEqual(await (await createStore(dir, key, 'guides')).list(), [{ ...records[0], name: '导入指引' }]);
+  const bytes = await readFile(join(dir, 'guides.enc'));
+  assert.equal(bytes.includes(Buffer.from('导入指引')), false);
+  assert.equal((await stat(join(dir, 'guides.enc'))).mode & 0o777, 0o600);
+  await assert.rejects(store.replaceAll(Array.from({ length: 101 }, (_, index) => ({ id: `g-${index}` }))), error => error.status === 409);
+  assert.equal((await store.list()).length, 1);
+});
+
+test('导出兼容缺少创建时间的旧模型记录', async () => {
+  const { createTransfer, validateTransfer } = await import('../transfer.mjs');
+  const updatedAt = '2026-09-19T06:10:18.901Z';
+  const legacy = { id: 'active-model', revision: 6, updatedAt, name: '旧模块', protocol: 'chat', baseURL: 'https://model.example/v1', apiKey: 'key', model: 'model', models: ['model'] };
+  const exported = createTransfer([], [], [legacy]);
+  assert.equal(exported.data.models[0].createdAt, updatedAt);
+  assert.equal(exported.data.models[0].updatedAt, updatedAt);
+  const payload = { format: 'mingxi-data-export', version: 1, exportedAt: updatedAt, data: { guides: [{ id: 'legacy-guide', revision: 1, name: '旧指引', category: '测试', description: '说明', instructions: '内容' }] } };
+  assert.equal(validateTransfer(payload).data.guides[0].createdAt, updatedAt);
+  assert.throws(() => validateTransfer({ ...payload, exportedAt: undefined }), /导出时间/);
+});

@@ -1,6 +1,6 @@
 # 当前部署状态
 
-2026-09-19，已部署至用户指定的 VPS；当前应用版本 2.0.0。
+2026-09-19，已部署至用户指定的 VPS；当前应用版本 2.1.0。
 
 - 应用：`/opt/prompt-enhancer`
 - Node.js：`/opt/prompt-enhancer-runtime/bin/node`，24.21.0，来自 nodejs.org 官方发行包，已核对 SHA256；下载归档已清理。
@@ -161,10 +161,18 @@
 ## 2.0.0 Web 认证框架
 
 - 新部署不再要求管理员在终端预生成密码。未初始化时强制进入 `/setup`；`/`、`/login` 和五个控制台直链均由服务端重定向到初始化页，业务 API 返回 409。
-- 初始化后，未登录访问 `/app`、`/app/editor`、`/app/guides`、`/app/history`、`/app/models` 均重定向 `/login`；登录后这些路径均返回 200。业务 API 未登录继续返回 401。
+- 初始化后，未登录访问 `/app`、`/app/editor`、`/app/guides`、`/app/history`、`/app/models`、`/app/data` 均重定向 `/login`；登录后这些路径均返回 200。业务 API 未登录继续返回 401。
 - 密码通过 HTTPS 提交，服务端用随机盐和 scrypt 生成哈希，再以现有 `STORAGE_KEY` 加密写入权限 600 的 `auth.enc`。浏览器不保存密码，日志不记录密码或请求正文。
 - 导航栏新增“修改密码”。接口要求当前密码、新密码及确认值；成功后清空全部会话。隔离实例已验证错误旧密码被拒绝、正确改密后旧密码失效、新密码可登录，服务重启后新密码仍可回读。
 - 生产升级先把原有环境哈希一次性迁移到 `auth.enc`，登录回读成功后清空 `PASSWORD_HASH` 并重启复验。现有网站密码未改变；环境文件保持 root:root 600，`auth.enc` 为 prompt-enhancer:prompt-enhancer 600。
 - 本地与 VPS 自动化测试均为 23/23 通过；本地浏览器验证初始化页、登录、导航栏改密表单、退出和直链拦截，公网浏览器验证 `/app/models` 未登录跳转 `/login`。
 - 公网回读 8 条指引、1 条收藏和 2 个 API 模块；三份既有加密业务数据 SHA256 与升级前完全一致。服务 active/enabled、`NRestarts=0`、readiness 200，近 10 分钟无 warning 级 journal。
 - 未启动 Docker 或 Colima。服务器测试发布目录和传输归档在验收后清理；回退代码基线为 `v1.7.0`，回退前需用当前网站密码重新生成兼容的 `PASSWORD_HASH`，认证数据与原业务数据互不覆盖。
+
+## 2.1.0 数据导入导出
+
+- 新增受认证保护的 `/app/data`、`GET /api/data/export` 和 `POST /api/data/import`。导出 JSON 包含指引、已收藏和完整模型配置；日常模型配置 API 仍不回传密钥。
+- 导入先完成 JSON 版本、字段、重复 ID、数量上限与模型连接配置校验，再对勾选模块执行完整覆盖。未勾选模块不写入；写入失败会用导入前快照回滚已处理模块。
+- 本地与 VPS 自动化测试均为 26/26 通过。浏览器实测双栏布局、自动生成、复制短暂反馈、错误 JSON 提示和模块选择；接口实测选择性覆盖、重复导入幂等与导入模型真实调用。
+- 公网回读为 8 条指引、1 条已收藏和 2 个模型配置；连续两次导出的业务数据相同。部署前后 `guides.enc`、`history.enc`、`model.enc` 和 `auth.enc` 的 SHA256 均未变。
+- 生产服务 active/enabled、`NRestarts=0`，仅监听 `127.0.0.1:3080`，readiness 和公网健康检查均为 200，近 10 分钟无 warning 级日志。未启动 Docker 或 Colima，本地与 VPS 临时发布文件均已清理；回退代码基线为 `v2.0.0`。

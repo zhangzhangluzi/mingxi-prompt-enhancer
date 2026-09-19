@@ -3,7 +3,7 @@ const preferenceKeys = { module: 'mingxi.lastApiModule', direction: 'mingxi.last
 function readPreference(key) { try { return localStorage.getItem(key) || ''; } catch { return ''; } }
 function savePreference(key, value) { try { localStorage.setItem(key, value); } catch {} }
 const viewTargets = { guides: ['guide-list', preferenceKeys.guideView], history: ['history-list', preferenceKeys.historyView], models: ['model-summary-list', preferenceKeys.modelView] };
-const panelPaths = { editor: '/app', guides: '/app/guides', history: '/app/history', models: '/app/models' };
+const panelPaths = { editor: '/app', guides: '/app/guides', history: '/app/history', models: '/app/models', data: '/app/data' };
 function panelFromPath() { return Object.entries(panelPaths).find(([, path]) => location.pathname === path)?.[0] || 'editor'; }
 function setViewMode(scope, mode) {
   const [targetId, storageKey] = viewTargets[scope] || [];
@@ -47,6 +47,11 @@ let selectedModuleId = readPreference(preferenceKeys.module);
 let modelSnapshot = '';
 let modelTransitioning = false;
 let statusTimer;
+let transferPayload = null;
+let exportBusy = false;
+let importBusy = false;
+let exportStatusTimer;
+let importStatusTimer;
 
 async function api(path, data, signal) {
   const generation = epoch;
@@ -99,6 +104,10 @@ function lock(isInitialized = true, updatePath = true) {
   request?.abort();
   clearTimeout(expiresTimer);
   $('prompt').value = ''; $('result').value = ''; $('password').value = ''; $('setup-form').reset();
+  transferPayload = null; exportBusy = false; importBusy = false;
+  clearTimeout(exportStatusTimer); clearTimeout(importStatusTimer);
+  $('export-json').value = ''; $('import-json').value = ''; $('export-status').textContent = ''; $('import-status').textContent = '';
+  $('import-modules').hidden = true; $('import-submit-wrap').hidden = true; $('export-copy').disabled = true;
   undoStack = []; source = ''; applied = false;
   $('result').hidden = true; $('empty-result').hidden = false;
   $('result-tag').textContent = '等待你的想法';
@@ -225,8 +234,12 @@ async function saveResult(asCopy = false) {
 $('save').addEventListener('click', () => saveResult());
 $('save-copy').addEventListener('click', () => saveResult(true));
 function showPanel(panel, updatePath = true) {
+  if (currentPanel === 'data' && panel !== 'data') {
+    $('export-json').value = ''; $('import-json').value = ''; $('export-copy').disabled = true;
+    transferFeedback('export'); resetImportSelection();
+  }
   currentPanel = panel;
-  for (const name of ['editor', 'guides', 'history', 'models']) $(name + '-panel').hidden = name !== panel;
+  for (const name of ['editor', 'guides', 'history', 'models', 'data']) $(name + '-panel').hidden = name !== panel;
   for (const button of document.querySelectorAll('[data-panel]')) {
     if (button.dataset.panel === panel) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current');
   }
@@ -235,9 +248,104 @@ function showPanel(panel, updatePath = true) {
   if (panel === 'guides') loadGuides();
   if (panel === 'history') loadHistory();
   if (panel === 'models' && !modelConfig && !modelBusy) loadModel();
+  if (panel === 'data' && !$('export-json').value && !exportBusy) loadDataExport();
 }
 for (const button of document.querySelectorAll('[data-panel]')) button.addEventListener('click', () => showPanel(button.dataset.panel));
 window.addEventListener('popstate', () => { if (authenticated) showPanel(panelFromPath(), false); });
+function transferFeedback(kind, message = '', error = false, delay = 0) {
+  const timerName = kind === 'export' ? 'exportStatusTimer' : 'importStatusTimer';
+  if (timerName === 'exportStatusTimer') { clearTimeout(exportStatusTimer); exportStatusTimer = undefined; }
+  else { clearTimeout(importStatusTimer); importStatusTimer = undefined; }
+  const node = $(`${kind}-status`);
+  node.textContent = message;
+  node.classList.toggle('error', error);
+  if (message && delay > 0) {
+    const timer = setTimeout(() => { node.textContent = ''; node.classList.remove('error'); }, delay);
+    if (timerName === 'exportStatusTimer') exportStatusTimer = timer; else importStatusTimer = timer;
+  }
+}
+async function loadDataExport() {
+  if (!authenticated || exportBusy) return;
+  exportBusy = true; $('export-refresh').disabled = true; $('export-copy').disabled = true;
+  transferFeedback('export', '正在生成…');
+  try {
+    const payload = await api('/api/data/export', undefined, AbortSignal.timeout(20000));
+    $('export-json').value = JSON.stringify(payload, null, 2);
+    $('export-copy').disabled = false;
+    transferFeedback('export', `已生成：指引 ${payload.data.guides.length} 条，已收藏 ${payload.data.favorites.length} 条，模型配置 ${payload.data.models.length} 条。`);
+  } catch (error) {
+    if (authenticated) transferFeedback('export', error.name === 'TimeoutError' ? '生成超时，请重试。' : error.message, true);
+  } finally { exportBusy = false; $('export-refresh').disabled = false; }
+}
+$('export-refresh').addEventListener('click', loadDataExport);
+$('export-copy').addEventListener('click', async () => {
+  if (!$('export-json').value) return;
+  try {
+    await navigator.clipboard.writeText($('export-json').value);
+    transferFeedback('export', 'JSON 已复制。', false, 1800);
+  } catch {
+    $('export-json').focus(); $('export-json').select();
+    transferFeedback('export', '浏览器未允许自动复制，已选中 JSON，请手动复制。', true);
+  }
+});
+function resetImportSelection(clearFeedback = true) {
+  transferPayload = null;
+  $('import-modules').hidden = true; $('import-submit-wrap').hidden = true; $('import-submit').disabled = true;
+  if (clearFeedback) transferFeedback('import');
+}
+$('import-json').addEventListener('input', () => resetImportSelection());
+$('import-parse').addEventListener('click', () => {
+  resetImportSelection(false);
+  const source = $('import-json').value.trim();
+  if (!source) return transferFeedback('import', '请先粘贴 JSON 内容。', true);
+  let payload;
+  try { payload = JSON.parse(source); }
+  catch (error) { return transferFeedback('import', `JSON 格式错误：${error.message}`, true); }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return transferFeedback('import', '导入内容必须是 JSON 对象。', true);
+  if (payload.format !== 'mingxi-data-export') return transferFeedback('import', 'format 必须为 mingxi-data-export。', true);
+  if (payload.version !== 1) return transferFeedback('import', '仅支持版本 1 的导入数据。', true);
+  if (typeof payload.exportedAt !== 'string' || !Number.isFinite(Date.parse(payload.exportedAt))) return transferFeedback('import', '导出时间必须是有效日期。', true);
+  if (!payload.data || typeof payload.data !== 'object' || Array.isArray(payload.data)) return transferFeedback('import', 'data 必须是对象。', true);
+  const labels = { guides: '指引', favorites: '已收藏', models: '模型配置' };
+  let available = 0;
+  for (const input of $('import-modules').querySelectorAll('input[type="checkbox"]')) {
+    const value = payload.data[input.value];
+    const present = Object.hasOwn(payload.data, input.value);
+    if (present && !Array.isArray(value)) return transferFeedback('import', `${labels[input.value]}必须是数组。`, true);
+    if (present && value.length > 100) return transferFeedback('import', `${labels[input.value]}不能超过 100 条。`, true);
+    input.parentElement.hidden = !present; input.checked = present;
+    if (present) { available++; $(`import-${input.value}-count`).textContent = `${value.length} 条`; }
+  }
+  if (!available) return transferFeedback('import', 'data 中至少需要包含指引、已收藏或模型配置中的一项。', true);
+  transferPayload = payload; $('import-modules').hidden = false; $('import-submit-wrap').hidden = false; $('import-submit').disabled = false;
+  transferFeedback('import', '格式已解析，请选择要导入的模块。');
+});
+for (const input of $('import-modules').querySelectorAll('input[type="checkbox"]')) input.addEventListener('change', () => {
+  $('import-submit').disabled = importBusy || !$('import-modules').querySelector('input:checked');
+});
+$('import-submit').addEventListener('click', async () => {
+  if (!transferPayload || importBusy) return;
+  const modules = [...$('import-modules').querySelectorAll('input:checked')].map(input => input.value);
+  if (!modules.length) return transferFeedback('import', '请至少选择一个模块。', true);
+  const names = { guides: '指引', favorites: '已收藏', models: '模型配置' };
+  if (!await askConfirm(`导入将完整覆盖${modules.map(name => names[name]).join('、')}的当前数据，未选模块保持不变。是否继续？`)) return;
+  importBusy = true; $('import-parse').disabled = true; $('import-submit').disabled = true;
+  transferFeedback('import', '正在校验并导入…');
+  try {
+    const result = await api('/api/data/import', { payload: transferPayload, modules }, AbortSignal.timeout(60000));
+    if (modules.includes('guides')) await loadGuides();
+    if (modules.includes('favorites')) { activeRecord = null; await loadHistory(); update(); }
+    if (modules.includes('models')) { modelConfig = null; await loadModel(); await loadModuleSelectors(); }
+    await loadDataExport();
+    const summary = modules.map(name => `${names[name]} ${result.imported[name]} 条`).join('，');
+    transferFeedback('import', `导入完成：${summary}。`, false, 4000);
+  } catch (error) {
+    if (authenticated) transferFeedback('import', error.name === 'TimeoutError' ? '导入超时，请刷新后核对数据。' : error.message, true);
+  } finally {
+    importBusy = false; $('import-parse').disabled = false;
+    $('import-submit').disabled = !$('import-modules').querySelector('input:checked');
+  }
+});
 function element(tag, text, className) {
   const node = document.createElement(tag); if (text) node.textContent = text; if (className) node.className = className; return node;
 }
