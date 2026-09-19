@@ -17,14 +17,14 @@
     </section>
     <section id="workspace" hidden>
       <nav class="workspace-nav" aria-label="工作台模块">
-        <button type="button" data-panel="editor" aria-current="page">提示语增强</button>
-        <button type="button" data-panel="guides">指引管理</button>
-        <button type="button" data-panel="history">已收藏</button>
-        <button type="button" data-panel="models">模型配置</button>
+        <button id="tab-editor" type="button" data-panel="editor" aria-current="page">提示语增强</button>
+        <button id="tab-guides" type="button" data-panel="guides">指引管理</button>
+        <button id="tab-history" type="button" data-panel="history">已收藏</button>
+        <button id="tab-models" type="button" data-panel="models">模型配置</button>
       </nav>
       <p id="model-notice" class="small muted" hidden>模型服务尚未配置。请在“模型配置”中填写服务商和密钥，指引管理和历史编辑可正常使用。</p>
       <p id="error" class="error" role="alert"></p><p id="status" class="status small" role="status" aria-live="polite"></p>
-      <section id="editor-panel">
+      <section id="editor-panel" aria-labelledby="tab-editor">
       <div class="direction-card">
         <div class="editor-select-field"><label for="api-module-select">API 模块</label><select id="api-module-select"><option value="">默认 API 模块</option></select></div>
         <div class="editor-select-field"><label for="direction">优化方向</label>
@@ -46,20 +46,17 @@
         </section>
       </div>
       </section>
-      <section id="guides-panel" hidden>
-        <div class="manager-heading"><div><h2>提示指引</h2><p class="muted small">把常用的优化方法保存下来，每次增强时直接选择。</p></div><button id="new-guide" class="primary">新增指引</button></div>
-        <div class="list-tools"><label class="sr-only" for="guide-search">搜索指引</label><input id="guide-search" type="search" placeholder="搜索名称、分类或指引内容"><label class="sr-only" for="guide-category">按分类筛选</label><select id="guide-category"><option value="">全部分类</option></select><button id="refresh-guides" class="secondary">刷新列表</button></div>
+      <section id="guides-panel" aria-labelledby="tab-guides" hidden>
+        <div class="list-tools"><label class="sr-only" for="guide-search">搜索指引</label><input id="guide-search" type="search" placeholder="搜索名称、分类或指引内容"><label class="sr-only" for="guide-category">按分类筛选</label><select id="guide-category"><option value="">全部分类</option></select><button id="refresh-guides" class="secondary">刷新列表</button><button id="new-guide" class="primary">新增指引</button></div>
         <p id="guide-count" class="small muted"></p><div id="guide-list" class="management-list"></div>
       </section>
-      <section id="history-panel" hidden>
-        <div class="manager-heading"><div><h2>已收藏</h2><p class="muted small">管理主动保存的提示语，或载入工作台继续迭代。增强结果不会自动收藏。</p></div><button id="refresh-history" class="secondary">刷新收藏</button></div>
-        <label class="sr-only" for="history-search">搜索历史提示语</label><input id="history-search" type="search" placeholder="搜索标题、原文或增强正文">
+      <section id="history-panel" aria-labelledby="tab-history" hidden>
+        <div class="list-tools history-tools"><label class="sr-only" for="history-search">搜索历史提示语</label><input id="history-search" type="search" placeholder="搜索标题、原文或增强正文"><button id="refresh-history" class="secondary">刷新收藏</button></div>
         <p id="history-count" class="small muted"></p><div id="history-list" class="management-list"></div>
       </section>
-      <section id="models-panel" hidden>
-        <div class="manager-heading"><div><h2>模型配置</h2><p class="muted small">选择文本模型服务。保存后立即用于增强，支持自定义兼容接口。</p></div><button id="refresh-model" class="secondary">刷新配置</button></div>
+      <section id="models-panel" aria-labelledby="tab-models" hidden>
+        <div class="model-page-actions"><button id="refresh-model" class="secondary">刷新配置</button><button id="model-create" type="button" class="primary">新建 API 模块</button></div>
         <div id="model-summary-list" class="model-summary-list" aria-label="已保存的 API 模块列表"></div>
-        <button id="model-create" type="button" class="secondary">新建 API 模块</button>
         <details id="model-editor"><summary class="model-editor-toggle">配置详情</summary>
         <form id="model-form" class="model-card" autocomplete="off">
           <fieldset id="model-fields" disabled>
