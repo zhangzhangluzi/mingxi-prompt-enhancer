@@ -10,7 +10,7 @@ const app = await createApp({
   origin: 'http://127.0.0.1:3080', secure: false,
   passwordHash: `${salt}:${scryptSync('local-test-password', salt, 64).toString('hex')}`,
   modelURL: 'https://mock.invalid', apiKey: process.env.TEST_MODEL_UNCONFIGURED ? '' : 'mock', model: 'mock', timeoutMs: 45000,
-  dataDir: dir, storageKey: randomBytes(32).toString('hex')
+  dataDir: dir, storageKey: randomBytes(32).toString('hex'), log: () => {}
 }, async (url, options) => {
   await new Promise(resolve => setTimeout(resolve, 800));
   if (options.method === 'GET') return Response.json({ data: [{ id: 'demo-text-model' }, { id: 'demo-reasoning-model' }] });

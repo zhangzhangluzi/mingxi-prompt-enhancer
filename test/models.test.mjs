@@ -39,7 +39,7 @@ test('配置鉴权、密钥不回传、加密落盘及重启、版本冲突、�
   const dir = await mkdtemp(join(tmpdir(), 'prompt-model-test-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const salt = 'b'.repeat(32), password = 'test-model-password';
-  const config = { origin: 'https://test.example', secure: true, passwordHash: `${salt}:${scryptSync(password, salt, 64).toString('hex')}`, timeoutMs: 500, dataDir: dir, storageKey: randomBytes(32).toString('hex') };
+  const config = { origin: 'https://test.example', secure: true, passwordHash: `${salt}:${scryptSync(password, salt, 64).toString('hex')}`, timeoutMs: 500, dataDir: dir, storageKey: randomBytes(32).toString('hex'), log: () => {} };
   let expectedProtocol = 'chat', calls = 0;
   const upstream = async (url, opts) => {
     calls++;

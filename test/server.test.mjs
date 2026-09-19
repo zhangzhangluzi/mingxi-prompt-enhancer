@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { scryptSync } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApp, configFromEnv } from '../server.mjs';
@@ -10,7 +10,8 @@ const password = 'test-password-123456789';
 const salt = 'a'.repeat(32);
 const passwordHash = `${salt}:${scryptSync(password, salt, 64).toString('hex')}`;
 async function fixture(t, upstream, overrides = {}) {
-  const config = { origin: 'https://test.example', secure: true, passwordHash, modelURL: 'https://model.example/v1/chat/completions', apiKey: 'secret-server-only', model: 'test', timeoutMs: 100, ...overrides };
+  const logs = [];
+  const config = { origin: 'https://test.example', secure: true, passwordHash, modelURL: 'https://model.example/v1/chat/completions', apiKey: 'secret-server-only', model: 'test', timeoutMs: 100, log: entry => logs.push(entry), ...overrides };
   const server = await createApp(config, upstream);
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { server.closeAllConnections(); server.close(); });
@@ -18,7 +19,7 @@ async function fixture(t, upstream, overrides = {}) {
   let cookie = '';
   const call = (path, data, headers = {}) => fetch(base + path, { method: data === undefined ? 'GET' : 'POST', headers: { Origin: config.origin, 'Content-Type': 'application/json', Cookie: cookie, ...headers }, body: data === undefined ? undefined : JSON.stringify(data) });
   const login = async () => { const r = await call('/api/login', { password }); cookie = r.headers.get('set-cookie')?.split(';')[0]; return r; };
-  return { call, login };
+  return { base, call, login, logs };
 }
 test('访问保护、会话 Cookie、安全响应头、来源验证、退出失效', async t => {
   const { call, login } = await fixture(t, () => { throw new Error('must not call'); });
@@ -80,6 +81,32 @@ test('生产配置拒绝明文站点、外网监听和不安全模型地址', ()
   assert.throws(() => configFromEnv({ ...env, PUBLIC_ORIGIN: 'http://prompt.example' }));
   assert.throws(() => configFromEnv({ ...env, HOST: '0.0.0.0' }));
   assert.throws(() => configFromEnv({ ...env, MODEL_BASE_URL: 'http://model.example' }));
+});
+test('健康检查支持 GET/HEAD，readiness 在存储损坏时失败，静态资源支持 HEAD', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'prompt-health-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const { base, call, login } = await fixture(t, undefined, { dataDir: dir, storageKey: 'f'.repeat(64) });
+  let response = await call('/health/live'); assert.equal(response.status, 200); assert.deepEqual(await response.json(), { status: 'ok' });
+  response = await fetch(`${base}/health/live`, { method: 'HEAD' }); assert.equal(response.status, 200); assert.equal(await response.text(), '');
+  response = await call('/health/ready'); assert.equal(response.status, 200); assert.deepEqual(await response.json(), { status: 'ready' });
+  response = await fetch(`${base}/`, { method: 'HEAD' }); assert.equal(response.status, 200); assert.equal(await response.text(), ''); assert.match(response.headers.get('content-type'), /text\/html/);
+  await login(); await call('/api/history', { original: '原文', result: '结果' });
+  await writeFile(join(dir, 'history.enc'), 'corrupted');
+  response = await call('/health/ready'); assert.equal(response.status, 503); assert.deepEqual(await response.json(), { status: 'unavailable' });
+});
+test('结构化日志可按请求追踪且不记录密码、密钥、提示语或模型正文', async t => {
+  const secretPassword = 'wrong-password-marker';
+  const secretPrompt = 'private-prompt-marker';
+  const { call, login, logs } = await fixture(t, async () => new Response('private-upstream-marker', { status: 500 }));
+  const denied = await call('/api/login', { password: secretPassword }); assert.equal(denied.status, 401); assert.match(denied.headers.get('x-request-id'), /^[0-9a-f-]{36}$/); await denied.text();
+  await login();
+  const failed = await call('/api/enhance', { prompt: secretPrompt }); assert.equal(failed.status, 502); assert.match(failed.headers.get('x-request-id'), /^[0-9a-f-]{36}$/); await failed.text();
+  const unknown = await call('/api/private-route-marker'); assert.equal(unknown.status, 404); await unknown.text();
+  const entry = logs.find(item => item.route === '/api/enhance');
+  assert.equal(entry.status, 502); assert.equal(entry.errorCategory, 'upstream'); assert.equal(entry.authenticated, true); assert.equal(entry.event, 'http_request'); assert.ok(Number.isInteger(entry.durationMs));
+  const serialized = JSON.stringify(logs);
+  for (const secret of [secretPassword, secretPrompt, 'secret-server-only', 'private-upstream-marker', 'private-route-marker']) assert.ok(!serialized.includes(secret));
+  assert.ok(logs.some(item => item.route === '/api/unknown'));
 });
 test('历史 API 需要认证，保存后回读正确，登出后不可读', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'prompt-api-'));

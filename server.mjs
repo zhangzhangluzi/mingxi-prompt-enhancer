@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomUUID, scrypt, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
@@ -52,6 +52,25 @@ async function boundedJSON(response, maxBytes = 262144) {
   }
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }
+function errorCategory(status) {
+  if ([400, 413, 415].includes(status)) return 'client_input';
+  if (status === 401) return 'authentication';
+  if (status === 403) return 'origin';
+  if ([404, 405].includes(status)) return 'routing';
+  if (status === 409) return 'conflict';
+  if (status === 429) return 'rate_limit';
+  if (status === 502) return 'upstream';
+  if (status === 503) return 'unavailable';
+  if (status === 504) return 'timeout';
+  return 'internal';
+}
+function logRoute(path) {
+  const routes = new Set(['/api/session', '/api/login', '/api/models', '/api/model', '/api/models/update', '/api/models/delete', '/api/model/discover', '/api/history', '/api/history/update', '/api/history/delete', '/api/guides', '/api/guides/update', '/api/guides/delete', '/api/logout', '/api/enhance', '/api/model/test', '/health/live', '/health/ready']);
+  if (routes.has(path)) return path;
+  if (path.startsWith('/api/')) return '/api/unknown';
+  if (path.startsWith('/health/')) return '/health/unknown';
+  return 'invalid-url';
+}
 export async function createApp(config, fetchModel = safeModelFetch) {
   const history = config.dataDir ? await createHistory(config.dataDir, config.storageKey) : null;
   const guides = config.dataDir ? await createStore(config.dataDir, config.storageKey, 'guides', DEFAULT_GUIDES) : null;
@@ -59,11 +78,18 @@ export async function createApp(config, fetchModel = safeModelFetch) {
   const modelStore = config.dataDir ? await createStore(config.dataDir, config.storageKey, 'model', [initialModel]) : null;
   const listModels = async () => modelStore ? await modelStore.list() : [initialModel];
   const currentModel = async (id = '') => { const records = await listModels(); if (id) return records.find(item => item.id === id); return records[0] || initialModel; };
+  const storageReady = async () => {
+    try {
+      await Promise.all([listModels(), guides ? guides.list() : Promise.resolve(), history ? history.list() : Promise.resolve()]);
+      return true;
+    } catch { return false; }
+  };
   const safeModel = item => ({ ...publicModel(item), id: item.id, name: item.name || '未命名 API 模块' });
   const files = new Map(await Promise.all(['index.html', 'style.css', 'app.js'].map(async name => [name, await readFile(new URL(`./public/${name}`, import.meta.url))])));
   const sessions = new Map();
   const attempts = new Map();
   let active = 0;
+  const writeLog = typeof config.log === 'function' ? config.log : entry => console.log(JSON.stringify(entry));
   const cookieName = config.secure ? '__Host-prompt_session' : 'prompt_session';
   const cookie = (token, age) => `${cookieName}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${age}${config.secure ? '; Secure' : ''}`;
   function limit(key, max, windowMs) {
@@ -74,6 +100,13 @@ export async function createApp(config, fetchModel = safeModelFetch) {
     if (++entry.count > max) throw new HttpError(429, '操作过于频繁，请稍后重试。');
   }
   const server = http.createServer(async (req, res) => {
+    const startedAt = Date.now();
+    const requestId = randomUUID();
+    let requestPath = 'invalid-url';
+    let authenticated = false;
+    let failure;
+    let logged = false;
+    res.setHeader('X-Request-ID', requestId);
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
@@ -81,12 +114,47 @@ export async function createApp(config, fetchModel = safeModelFetch) {
     res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
     res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
     if (config.secure) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
-    const send = (status, data) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(data)); };
+    const send = (status, data) => {
+      const body = Buffer.from(JSON.stringify(data));
+      res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': body.length });
+      res.end(req.method === 'HEAD' ? undefined : body);
+    };
+    const recordRequest = (status = res.statusCode) => {
+      if (logged) return;
+      if (!requestPath.startsWith('/api/') && !requestPath.startsWith('/health/')) return;
+      logged = true;
+      try {
+        writeLog({
+          timestamp: new Date().toISOString(),
+          level: status >= 500 ? 'error' : status >= 400 ? 'warn' : 'info',
+          event: 'http_request',
+          requestId,
+          method: req.method,
+          route: logRoute(requestPath),
+          status,
+          durationMs: Date.now() - startedAt,
+          authenticated,
+          ...(failure ? { errorCategory: failure } : {})
+        });
+      } catch { /* 日志故障不得影响请求。 */ }
+    };
+    res.on('finish', () => recordRequest());
+    res.on('close', () => {
+      if (!res.writableFinished) { failure ||= 'client_disconnect'; recordRequest(499); }
+    });
     try {
       const path = new URL(req.url, config.origin).pathname;
+      requestPath = path;
       for (const [key, value] of sessions) if (Date.now() >= value.expires) sessions.delete(key);
       const token = (req.headers.cookie || '').split(';').map(x => x.trim()).find(x => x.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1);
       const session = sessions.get(token);
+      authenticated = !!session;
+      if (['GET', 'HEAD'].includes(req.method) && path === '/health/live') return send(200, { status: 'ok' });
+      if (['GET', 'HEAD'].includes(req.method) && path === '/health/ready') {
+        const ready = await storageReady();
+        if (!ready) failure = 'unavailable';
+        return send(ready ? 200 : 503, { status: ready ? 'ready' : 'unavailable' });
+      }
       if (req.method === 'POST' && req.headers.origin !== config.origin) throw new HttpError(403, '请求来源无效，请从本站页面操作。');
       if (req.method === 'GET' && path === '/api/session') return send(200, { authenticated: !!session, expiresAt: session?.expires, maxInput: MAX_INPUT, modelReady: session ? modelReady(await currentModel()) : undefined, historyEnabled: session ? !!history : undefined });
       if (req.method === 'POST' && path === '/api/login') {
@@ -244,12 +312,14 @@ export async function createApp(config, fetchModel = safeModelFetch) {
         throw new HttpError(404, '接口不存在。');
       }
       const name = path === '/' ? 'index.html' : path.slice(1);
-      if (req.method !== 'GET' || !files.has(name)) throw new HttpError(404, '页面不存在。');
+      if (!['GET', 'HEAD'].includes(req.method) || !files.has(name)) throw new HttpError(404, '页面不存在。');
       const type = { 'index.html': 'text/html', 'style.css': 'text/css', 'app.js': 'text/javascript' }[name];
-      res.writeHead(200, { 'Content-Type': `${type}; charset=utf-8` });
-      res.end(files.get(name));
+      res.writeHead(200, { 'Content-Type': `${type}; charset=utf-8`, 'Content-Length': files.get(name).length });
+      res.end(req.method === 'HEAD' ? undefined : files.get(name));
     } catch (error) {
-      if (!res.headersSent && !res.destroyed) send(error.status || 500, { error: error.status ? error.message : '服务暂时不可用，请稍后重试。' });
+      const status = error.status || 500;
+      failure = errorCategory(status);
+      if (!res.headersSent && !res.destroyed) send(status, { error: error.status ? error.message : '服务暂时不可用，请稍后重试。' });
     }
   });
   server.requestTimeout = 15000;

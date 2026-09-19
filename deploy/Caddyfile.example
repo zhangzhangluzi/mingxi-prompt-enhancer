@@ -1,4 +1,5 @@
 # 添加到现有 Caddy 配置中，替换域名；不要覆盖已有站点。
+# CSP、HSTS 等安全响应头由应用统一输出，本站点不要再导入响应头片段。
 prompt.example.com {
     reverse_proxy 127.0.0.1:3080
 }

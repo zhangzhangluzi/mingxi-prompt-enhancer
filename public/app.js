@@ -27,6 +27,8 @@ let modelBusy = false;
 let modelCatalog = [];
 let modelModules = [];
 let selectedModuleId = '';
+let modelSnapshot = '';
+let modelTransitioning = false;
 
 async function api(path, data, signal) {
   const generation = epoch;
@@ -62,7 +64,7 @@ function update() {
 }
 function lock() {
   authenticated = false; epoch++;
-  modelConfig = null; modelProviders = []; modelCatalog = []; modelModules = []; selectedModuleId = ''; renderModelCatalog(); renderModuleSelectors(); $('model-form').reset(); $('model-provider').replaceChildren(); $('model-key-status').textContent = ''; $('model-feedback').textContent = ''; $('model-fields').disabled = true;
+  modelConfig = null; modelProviders = []; modelCatalog = []; modelModules = []; selectedModuleId = ''; modelSnapshot = ''; modelTransitioning = false; renderModelCatalog(); renderModuleSelectors(); $('model-form').reset(); $('model-provider').replaceChildren(); $('model-key-status').textContent = ''; $('model-feedback').textContent = ''; $('model-fields').disabled = true;
   settleConfirmation(false);
   for (const id of ['guide-dialog', 'history-dialog']) $(id).close();
   $('guide-form').reset(); $('history-form').reset();
@@ -333,18 +335,43 @@ $('history-form').addEventListener('submit', event => submitDialog('history', ev
 function modelFeedback(message, error = false) {
   $('model-feedback').textContent = message; $('model-feedback').classList.toggle('error', error);
 }
+function modelDraft() {
+  return {
+    id: modelConfig?.id || '',
+    name: $('model-module-name').value.trim(),
+    protocol: $('model-protocol').value,
+    baseURL: $('model-base').value.trim(),
+    apiKey: $('model-key').value.trim(),
+    model: $('model-name').value.trim(),
+    models: modelCatalog
+  };
+}
+function rememberModelDraft() { modelSnapshot = JSON.stringify(modelDraft()); }
+function modelDraftDirty() { return !!modelSnapshot && modelSnapshot !== JSON.stringify(modelDraft()); }
+async function guardModelDraft(action) {
+  if (modelBusy || modelTransitioning) return false;
+  modelTransitioning = true;
+  try {
+    if (modelDraftDirty() && !await askConfirm('当前模型配置尚未保存，确定放弃修改？')) return false;
+    await action(); return true;
+  } finally { modelTransitioning = false; }
+}
 function renderSavedModules() {
   const select = $('model-module'); select.replaceChildren(...modelModules.map(item => new Option(item.name, item.id))); select.value = modelConfig?.id || '';
   const list = $('model-summary-list'); list.replaceChildren();
   for (const item of modelModules) {
     const row = element('div', '', 'model-summary-row'), info = element('div', '', 'model-summary-info'), buttons = element('div', '', 'record-actions');
     info.append(element('strong', item.name), element('small', `${item.protocol} · ${item.model || '未选择模型'} · ${item.ready ? '已配置' : '待配置'}`));
-    buttons.append(action('编辑配置', () => { if (modelBusy) return; displayModel(item); $('model-editor').open = true; }), action('测试连接', () => { if (modelBusy) return; displayModel(item); $('model-editor').open = true; $('model-test').click(); }));
+    buttons.append(action('编辑配置', () => openModel(item)), action('测试连接', () => openModel(item, true)));
     row.append(info, buttons); list.append(row);
   }
 }
-$('model-create').addEventListener('click', () => { if (modelBusy) return; $('model-editor').open = true; $('model-new').click(); $('model-module-name').focus(); });
-$('model-module').addEventListener('change', () => { const item = modelModules.find(m => m.id === $('model-module').value); if (item) displayModel(item); });
+async function openModel(item, test = false) {
+  await guardModelDraft(() => {
+    displayModel(item); $('model-editor').open = true;
+    if (test) $('model-test').click();
+  });
+}
 function displayModel(config) {
   modelConfig = config; renderSavedModules();
   $('model-module-name').value = config.name || '';
@@ -353,7 +380,25 @@ function displayModel(config) {
   $('model-provider').value = modelProviders.find(p => p.baseURL === config.baseURL && p.protocol === config.protocol)?.id || 'custom';
   $('model-key-status').textContent = config.hasKey ? '密钥已保存。留空可保留；更换地址或协议时需重新填写。' : '尚未保存密钥。';
   $('model-notice').hidden = config.ready;
+  rememberModelDraft();
 }
+function displayNewModel() {
+  modelConfig = null; renderSavedModules(); modelCatalog = [];
+  $('model-module-name').value = ''; $('model-provider').value = 'custom'; $('model-protocol').value = 'chat'; $('model-base').value = ''; $('model-key').value = ''; $('model-key-status').textContent = '尚未保存密钥。';
+  renderModelCatalog(); rememberModelDraft();
+  modelFeedback('正在新建 API 模块，请填写名称、地址和密钥。');
+}
+async function createModel() {
+  await guardModelDraft(() => { $('model-editor').open = true; displayNewModel(); $('model-module-name').focus(); });
+}
+$('model-create').addEventListener('click', createModel);
+$('model-new').addEventListener('click', createModel);
+$('model-module').addEventListener('change', async () => {
+  const item = modelModules.find(m => m.id === $('model-module').value);
+  if (!item) return;
+  const changed = await guardModelDraft(() => displayModel(item));
+  if (!changed) $('model-module').value = modelConfig?.id || '';
+});
 async function loadModel() {
   if (modelBusy) return;
   modelBusy = true; $('refresh-model').disabled = true; $('model-fields').disabled = true; modelFeedback('正在读取配置…');
@@ -366,9 +411,8 @@ async function loadModel() {
   finally { modelBusy = false; $('refresh-model').disabled = false; }
 }
 $('refresh-model').addEventListener('click', async () => {
-  if (await askConfirm('刷新会丢弃尚未保存的模型配置，是否继续？')) loadModel();
+  await guardModelDraft(loadModel);
 });
-$('model-new').addEventListener('click', () => { modelConfig = null; renderSavedModules(); modelCatalog = []; $('model-module-name').value = ''; $('model-provider').value = 'custom'; $('model-protocol').value = 'chat'; $('model-base').value = ''; $('model-key').value = ''; renderModelCatalog(); modelFeedback('正在新建 API 模块，请填写名称、地址和密钥。'); });
 $('model-delete').addEventListener('click', async () => { if (!modelConfig || modelBusy) return; if (!await askConfirm(`确定删除 API 模块“${modelConfig.name || '未命名'}”？`)) return; const deletedId = modelConfig.id; modelBusy = true; try { const data = await api('/api/models/delete', { id: deletedId, revision: modelConfig.revision }, AbortSignal.timeout(15000)); modelModules = data.modules || []; if (selectedModuleId === deletedId || !modelModules.some(item => item.id === selectedModuleId)) selectedModuleId = modelModules[0]?.id || ''; renderModuleSelectors(); modelConfig = modelModules[0] || null; if (modelConfig) displayModel(modelConfig); else { $('model-form').reset(); modelCatalog = []; renderModelCatalog(); } modelFeedback('API 模块已删除。'); } catch (error) { modelFeedback(error.message, true); } finally { modelBusy = false; } });
 $('model-provider').addEventListener('change', () => {
   const preset = modelProviders.find(p => p.id === $('model-provider').value);
@@ -419,7 +463,7 @@ $('model-form').addEventListener('submit', async event => {
 });
 $('model-test').addEventListener('click', async () => {
   if (modelBusy || !modelConfig) return;
-  if (JSON.stringify(modelCatalog) !== JSON.stringify(modelConfig.models || []) || $('model-key').value || $('model-base').value.trim() !== modelConfig.baseURL || $('model-name').value.trim() !== modelConfig.model || $('model-protocol').value !== modelConfig.protocol) return modelFeedback('请先保存当前修改，再测试连接。', true);
+  if (modelDraftDirty()) return modelFeedback('请先保存当前修改，再测试连接。', true);
   modelBusy = true; $('model-fields').disabled = true; $('refresh-model').disabled = true; modelFeedback('正在测试已保存配置…');
   try { await api('/api/model/test', { revision: modelConfig.revision, moduleId: modelConfig.id }, AbortSignal.timeout(55000)); modelFeedback('连接成功，模型已返回完整文本，可开始增强。'); }
   catch (error) { if (authenticated) modelFeedback(error.name === 'TimeoutError' ? '连接测试超时，请稍后重试。' : error.message, true); }
