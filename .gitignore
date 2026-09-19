@@ -5,3 +5,5 @@ node_modules/
 *.log
 test-results/
 .private/
+.DS_Store
+npm-debug.log*

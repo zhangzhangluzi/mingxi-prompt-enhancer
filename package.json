@@ -1,7 +1,9 @@
 {
-  "name": "private-prompt-enhancer",
+  "name": "mingxi-prompt-enhancer",
   "version": "2.2.5",
-  "private": true,
+  "description": "明晰：可自托管的提示语增强工作台",
+  "license": "MIT",
+  "private": false,
   "type": "module",
   "engines": { "node": ">=22" },
   "scripts": {

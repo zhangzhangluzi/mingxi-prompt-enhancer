@@ -2,7 +2,7 @@
 
 一个可部署到 Linux 服务器的中文工作台，支持任意输入语言。参考 [prompt-optimizer](https://github.com/linshenkx/prompt-optimizer) 的一键优化交互，独立实现，未复制上游代码。
 
-当前生产状态、实测性能、问题分级、验证与回退方案见 [SYSTEM_AUDIT.md](SYSTEM_AUDIT.md)。
+公开仓库只包含源码、通用配置示例和验证说明，不包含任何生产域名、访问密码、API 密钥或业务数据。部署与安全边界见 [DEPLOYMENT.md](DEPLOYMENT.md) 和 [SECURITY.md](SECURITY.md)。
 
 ## 功能
 
@@ -36,6 +36,20 @@ npm start
 # 首次打开站点，在初始化页面设置管理员密码。
 npm test
 ```
+
+## 项目结构
+
+- `server.mjs`：Node.js HTTP 服务、认证、路由、导入导出与安全响应头。
+- `public/`：无构建步骤的 HTML、CSS、原生 JavaScript 前端。
+- `storage.mjs`：AES-256-GCM 加密文件存储、原子写入与版本冲突保护。
+- `models.mjs`：Chat Completions、Responses、Claude Messages、Gemini 协议适配。
+- `guides.mjs`、`prompt.mjs`：默认指引与提示语增强规则。
+- `test/`：认证、存储、模型协议和业务边界测试。
+- `deploy/`：systemd 与 Caddy 通用示例；请先替换域名、Node 路径和用户。
+
+## 公开发布边界
+
+本项目面向个人或可信小组自托管使用。所有登录者共享同一工作区权限；项目不提供多租户隔离、计费、团队成员管理或模型服务商的数据保留控制。提交问题时请删除域名、Cookie、访问密码、API 密钥、提示语正文和加密存储文件。
 
 ## 服务器部署（无需 Docker）
 
