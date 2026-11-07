@@ -226,25 +226,36 @@ export async function createApp(config, fetchModel = safeModelFetch) {
         limit('login', 10, 60000);
         const { password } = await bodyJSON(req);
         if (!passwordHash) throw new HttpError(409, '请先完成管理员密码初始化。');
-        if (!await verifyPassword(password, passwordHash)) throw new HttpError(401, '密码错误，请重试。');
+        const verifiedHash = passwordHash;
+        if (!await verifyPassword(password, verifiedHash) || verifiedHash !== passwordHash) throw new HttpError(401, '密码错误，请重试。');
         const nextSession = createSession(res, token);
         return send(200, await sessionPayload(nextSession));
       }
       if (path.startsWith('/api/')) {
         if (!passwordHash) throw new HttpError(409, '请先完成管理员密码初始化。');
         if (!session) throw new HttpError(401, '登录已过期，请重新登录。');
+        const assertSession = () => {
+          if (sessions.get(token) !== session || session.expires <= Date.now()) throw new HttpError(401, '登录已过期，请重新登录。');
+        };
+        const withSessionData = operation => serializeData(() => {
+          assertSession();
+          return operation();
+        });
         if (path === '/api/password' && req.method === 'POST') {
           if (!credentials) throw new HttpError(503, '管理员尚未启用持久化凭据存储。');
           limit(`password:${token}`, 5, 60000);
           const { currentPassword, newPassword, confirmation } = await bodyJSON(req);
-          if (!await verifyPassword(currentPassword, passwordHash)) throw new HttpError(401, '当前密码错误。');
+          const verifiedHash = passwordHash;
+          if (!await verifyPassword(currentPassword, verifiedHash)) throw new HttpError(401, '当前密码错误。');
           if (!validPassword(newPassword)) throw new HttpError(400, '新密码必须为 16–256 个字符。');
           if (newPassword !== confirmation) throw new HttpError(400, '两次输入的新密码不一致。');
           if (newPassword === currentPassword) throw new HttpError(409, '新密码不能与当前密码相同。');
           const nextHash = await hashPassword(newPassword);
-          await credentials.replace(passwordHash, nextHash);
-          passwordHash = nextHash;
-          sessions.clear();
+          await withSessionData(async () => {
+            await credentials.replace(verifiedHash, nextHash);
+            passwordHash = nextHash;
+            sessions.clear();
+          });
           res.setHeader('Set-Cookie', cookie('', 0));
           return send(200, { ok: true, initialized: true });
         }
@@ -253,11 +264,12 @@ export async function createApp(config, fetchModel = safeModelFetch) {
           limit(`export:${token}`, 5, 60000);
           const { password } = await bodyJSON(req, 2048);
           if (!await verifyPassword(password, passwordHash)) throw new HttpError(403, '当前密码错误。');
-          const payload = await serializeData(async () => createTransfer(
+          const payload = await withSessionData(async () => createTransfer(
             guides ? await guides.list() : DEFAULT_GUIDES,
             history ? await history.list() : [],
             await listModels()
           ));
+          assertSession();
           return send(200, payload);
         }
         if (path === '/api/data/import' && req.method === 'POST') {
@@ -276,9 +288,10 @@ export async function createApp(config, fetchModel = safeModelFetch) {
             }
             if (input.modules.includes('models') && payload.data.models.length === 0) throw new HttpError(400, '模型配置至少需要保留一个 API 模块。');
             const stores = { guides, favorites: history, models: modelStore };
-            const counts = await serializeData(async () => {
+            const counts = await withSessionData(async () => {
               const snapshots = Object.fromEntries(await Promise.all(input.modules.map(async name => [name, await stores[name].list()])));
               for (const name of input.modules) assertStoreCapacity(storeNames[name], snapshots[name]);
+              assertSession();
               const applied = [];
               try {
                 for (const name of input.modules) {
@@ -321,7 +334,7 @@ export async function createApp(config, fetchModel = safeModelFetch) {
           if (name.length > 80) throw new HttpError(400, '模块名称不能为空或超过 80 个字符。');
           const basePrevious = current || initialModel;
           const fields = { name: name || basePrevious.name || 'API 模块', ...catalogFields(input, basePrevious, validateModel(input, basePrevious, true)) };
-          const saved = await serializeData(() => current ? modelStore.update(current.id, input.revision, fields) : modelStore.save(fields, { deduplicate: false }));
+          const saved = await withSessionData(() => current ? modelStore.update(current.id, input.revision, fields) : modelStore.save(fields, { deduplicate: false }));
           return send(200, path === '/api/model' ? { config: safeModel(saved) } : { module: safeModel(saved), modules: (await listModels()).map(safeModelSummary) });
         }
         if (path === '/api/models/update' && req.method === 'POST') {
@@ -330,16 +343,24 @@ export async function createApp(config, fetchModel = safeModelFetch) {
           if (!current) throw new HttpError(404, '该 API 模块不存在，请刷新列表。');
           if (!Number.isSafeInteger(input.revision) || input.revision < 1) throw new HttpError(400, '配置版本无效，请刷新。');
           const name = typeof input.name === 'string' ? input.name.trim() : ''; if (!name || name.length > 80) throw new HttpError(400, '模块名称不能为空或超过 80 个字符。');
-          const saved = await serializeData(() => modelStore.update(current.id, input.revision, { name, ...catalogFields(input, current, validateModel(input, current, true)) }));
+          const saved = await withSessionData(() => modelStore.update(current.id, input.revision, { name, ...catalogFields(input, current, validateModel(input, current, true)) }));
           return send(200, { module: safeModel(saved), modules: (await listModels()).map(safeModelSummary) });
         }
         if (path === '/api/models/delete' && req.method === 'POST') {
           if (!modelStore) throw new HttpError(503, '管理员尚未启用持久化存储。');
-          limit(`model:${token}`, 40, 60000); const input = await bodyJSON(req); const records = await listModels(); const current = records.find(item => item.id === input.id);
-          if (!current) throw new HttpError(404, '该 API 模块不存在，请刷新列表。');
-          if (!Number.isSafeInteger(input.revision) || input.revision < 1) throw new HttpError(400, '配置版本无效，请刷新列表。');
-          if (records.length <= 1) throw new HttpError(409, '至少保留一个 API 模块；可清空模块内容来停用增强。');
-          await serializeData(() => modelStore.remove(current.id, input.revision)); return send(200, { ok: true, modules: (await listModels()).map(safeModelSummary) });
+          limit(`model:${token}`, 40, 60000);
+          const input = await bodyJSON(req);
+          const modules = await withSessionData(async () => {
+            const records = await listModels();
+            assertSession();
+            const current = records.find(item => item.id === input.id);
+            if (!current) throw new HttpError(404, '该 API 模块不存在，请刷新列表。');
+            if (!Number.isSafeInteger(input.revision) || input.revision < 1) throw new HttpError(400, '配置版本无效，请刷新列表。');
+            if (records.length <= 1) throw new HttpError(409, '至少保留一个 API 模块；可清空模块内容来停用增强。');
+            await modelStore.remove(current.id, input.revision);
+            return records.filter(item => item.id !== current.id).map(safeModelSummary);
+          });
+          return send(200, { ok: true, modules });
         }
         if (path === '/api/model/discover' && req.method === 'POST') {
           const input = await bodyJSON(req);
@@ -353,8 +374,9 @@ export async function createApp(config, fetchModel = safeModelFetch) {
           const disconnect = () => { if (!res.writableEnded) controller.abort(); };
           res.on('close', disconnect); session.busy = true; active++;
           try {
+            assertSession();
             const models = await discoverModels(candidate, fetchModel, controller.signal, boundedJSON);
-            if (sessions.get(token) !== session || session.expires <= Date.now()) throw new HttpError(401, '登录已过期，请重新登录。');
+            assertSession();
             return send(200, { models });
           } catch (error) {
             if (controller.signal.aborted) throw new HttpError(504, '模型列表拉取超时，已有列表未改变。');
@@ -376,7 +398,7 @@ export async function createApp(config, fetchModel = safeModelFetch) {
           const record = await bodyJSON(req, 262144);
           if (action && (typeof record.id !== 'string' || !/^[a-z0-9-]{1,64}$/.test(record.id) || !Number.isSafeInteger(record.revision) || record.revision < 1)) throw new HttpError(400, '记录标识或版本无效，请刷新列表。');
           try {
-            if (action === 'delete') { await serializeData(() => store.remove(record.id, record.revision)); return send(200, { ok: true }); }
+            if (action === 'delete') { await withSessionData(() => store.remove(record.id, record.revision)); return send(200, { ok: true }); }
             const text = (key, max, required = true) => {
               const value = record[key] ?? (required ? null : '');
               if (typeof value !== 'string' || (required && !value.trim()) || [...value].length > max) throw new HttpError(400, `${key} 不能为空或超过 ${max} 个字符。`);
@@ -385,8 +407,12 @@ export async function createApp(config, fetchModel = safeModelFetch) {
             const fields = kind === 'history'
               ? { title: text('title', 100, false), original: text('original', MAX_INPUT), result: text('result', 48000), guideName: text('guideName', 80, false) }
               : { name: text('name', 80).trim(), category: text('category', 30).trim(), description: text('description', 300), instructions: text('instructions', 4000) };
+            if (kind === 'history' && Object.hasOwn(record, 'guideId')) {
+              if (typeof record.guideId !== 'string' || !/^(?:[a-z0-9-]{1,64})?$/.test(record.guideId)) throw new HttpError(400, '指引 ID 无效。');
+              fields.guideId = record.guideId;
+            }
             if (record.asCopy !== undefined && typeof record.asCopy !== 'boolean') throw new HttpError(400, '另存选项无效。');
-            const saved = await serializeData(() => action === 'update' ? store.update(record.id, record.revision, fields) : store.save(fields, { deduplicate: !record.asCopy }));
+            const saved = await withSessionData(() => action === 'update' ? store.update(record.id, record.revision, fields) : store.save(fields, { deduplicate: !record.asCopy }));
             return send(200, { ok: true, record: saved });
           } catch (error) {
             if (error instanceof StoreError || error instanceof HttpError) throw error;
@@ -421,6 +447,7 @@ export async function createApp(config, fetchModel = safeModelFetch) {
           const disconnect = () => { if (!res.writableEnded) controller.abort(); };
           res.on('close', disconnect);
           try {
+            assertSession();
             const call = modelRequest(modelConfig, testing ? '只返回用户要求的简短文本。' : system, prompt);
             const upstream = await fetchModel(call.url, {
               method: 'POST', redirect: 'error', signal: controller.signal,
@@ -432,9 +459,9 @@ export async function createApp(config, fetchModel = safeModelFetch) {
             }
             const data = await boundedJSON(upstream);
             const output = modelOutput(modelConfig.protocol, data);
-            if (sessions.get(token) !== session || session.expires <= Date.now()) throw new HttpError(401, '登录已过期，请重新登录。');
+            assertSession();
             if (testing) return send(200, { ok: true, revision: modelConfig.revision });
-            return send(200, { result: output.trim(), ...(guide ? { guideName: guide.name } : {}) });
+            return send(200, { result: output.trim(), ...(guide ? { guideId, guideName: guide.name } : {}) });
           } catch (error) {
             if (controller.signal.aborted) throw new HttpError(504, '增强超时，请稍后重试；原文已保留。');
             if (error.status) throw error;

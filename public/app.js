@@ -1,6 +1,6 @@
 const $ = id => document.getElementById(id);
 const preferenceKeys = { module: 'mingxi.lastApiModule', direction: 'mingxi.lastDirection', guideView: 'mingxi.guideView', historyView: 'mingxi.historyView', modelView: 'mingxi.modelView' };
-function readPreference(key) { try { return localStorage.getItem(key) || ''; } catch { return ''; } }
+function readPreference(key, fallback = '') { try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; } }
 function savePreference(key, value) { try { localStorage.setItem(key, value); } catch {} }
 const viewTargets = { guides: ['guide-list', preferenceKeys.guideView], history: ['history-list', preferenceKeys.historyView], models: ['model-summary-list', preferenceKeys.modelView] };
 const panelPaths = { editor: '/app', guides: '/app/guides', history: '/app/history', models: '/app/models', data: '/app/data' };
@@ -29,9 +29,12 @@ let saving = false;
 let epoch = 0;
 let currentPanel = 'editor';
 let guides = [];
+let guidesLoaded = false;
+let selectedDirectionId = null;
 let records = [];
 let activeRecord = null;
 let resultGuide = '';
+let resultGuideId;
 let editingGuide = null;
 let editingHistory = null;
 let modalBusy = false;
@@ -98,7 +101,7 @@ function lock(isInitialized = true, updatePath = true) {
   settleConfirmation(false);
   for (const id of ['guide-dialog', 'history-dialog', 'password-dialog', 'export-dialog']) $(id).close();
   $('guide-form').reset(); $('history-form').reset(); $('password-form').reset(); $('export-form').reset(); $('export-error').textContent = '';
-  guides = []; records = []; activeRecord = null; resultGuide = ''; editingGuide = null; editingHistory = null;
+  guides = []; guidesLoaded = false; selectedDirectionId = null; records = []; activeRecord = null; resultGuide = ''; resultGuideId = undefined; editingGuide = null; editingHistory = null;
   $('guide-list').replaceChildren(); $('history-list').replaceChildren();
   $('direction').replaceChildren(new Option('通用增强 · 不指定方向', ''));
   $('result-title').value = ''; $('result-title-wrap').hidden = true;
@@ -188,7 +191,7 @@ async function enhance() {
     if (modelModules.length && !selectedModuleId) { showError('请先选择一个 API 模块。'); busy = false; request = null; update(); return; }
     const data = await api('/api/enhance', { prompt, guideId: $('direction').value, moduleId: selectedModuleId }, request.signal);
     if (!authenticated || request.signal.aborted) return;
-    source = prompt; applied = false; activeRecord = null; resultGuide = data.guideName || '';
+    source = prompt; applied = false; activeRecord = null; resultGuide = data.guideName || ''; resultGuideId = data.guideId ?? '';
     $('result-title').value = ''; $('result-title-wrap').hidden = true;
     $('result').value = data.result; $('result').hidden = false; $('empty-result').hidden = true;
     $('result-tag').textContent = '可直接使用';
@@ -225,7 +228,7 @@ async function saveResult(asCopy = false) {
   saving = true; update(); showError();
   const previous = activeRecord;
   try {
-    const fields = { title: $('result-title').value, original: source, result: $('result').value, guideName: resultGuide, asCopy };
+    const fields = { title: $('result-title').value, original: source, result: $('result').value, guideName: resultGuide, guideId: resultGuideId, asCopy };
     const data = await api(previous && !asCopy ? '/api/history/update' : '/api/history', { ...fields, ...(previous && !asCopy ? { id: previous.id, revision: previous.revision } : {}) }, AbortSignal.timeout(15000));
     activeRecord = data.record;
     showStatus(previous && !asCopy ? '收藏已更新。' : '已保存到收藏。');
@@ -364,20 +367,23 @@ function action(text, onClick, className = 'secondary') {
   const button = element('button', text, className); button.type = 'button'; button.addEventListener('click', onClick); return button;
 }
 function directions() {
-  const selected = $('direction').value || readPreference(preferenceKeys.direction);
+  const selected = selectedDirectionId ?? readPreference(preferenceKeys.direction);
   $('direction').replaceChildren(new Option('通用增强 · 不指定方向', ''), ...guides.map(g => new Option(`${g.category} · ${g.name}`, g.id)));
   $('direction').value = guides.some(g => g.id === selected) ? selected : '';
-  savePreference(preferenceKeys.direction, $('direction').value);
   const category = $('guide-category').value;
   const categories = [...new Set(guides.map(g => g.category))];
   $('guide-category').replaceChildren(new Option('全部分类', ''), ...categories.map(c => new Option(c, c)));
   if (categories.includes(category)) $('guide-category').value = category;
   $('guide-categories').replaceChildren(...categories.map(c => new Option(c, c)));
 }
-$('direction').addEventListener('change', () => savePreference(preferenceKeys.direction, $('direction').value));
+function rememberDirection(id) {
+  selectedDirectionId = id;
+  savePreference(preferenceKeys.direction, id);
+}
+$('direction').addEventListener('change', () => rememberDirection($('direction').value));
 async function loadGuides() {
   $('refresh-guides').disabled = true;
-  try { const data = await api('/api/guides', undefined, AbortSignal.timeout(15000)); guides = data.records; directions(); renderGuides(); }
+  try { const data = await api('/api/guides', undefined, AbortSignal.timeout(15000)); guides = data.records; guidesLoaded = true; directions(); renderGuides(); }
   catch (error) { if (authenticated) showError(error.message); }
   finally { $('refresh-guides').disabled = false; }
 }
@@ -424,8 +430,15 @@ function renderHistory() {
 async function restoreRecord(record) {
   if (busy || saving) return showError('请等待当前操作完成。');
   if (($('prompt').value || $('result').value) && !await askConfirm('载入将替换工作台内容。尚未保存的结果请先保存，是否继续？')) return;
+  const generation = epoch;
+  if (!guidesLoaded) await loadGuides();
+  if (generation !== epoch || !authenticated || !guidesLoaded) return;
+  const legacyMatches = record.guideId === undefined && record.guideName ? guides.filter(guide => guide.name === record.guideName) : [];
+  const directionId = record.guideId ?? (legacyMatches.length === 1 ? legacyMatches[0].id : '');
+  $('direction').value = guides.some(guide => guide.id === directionId) ? directionId : '';
+  rememberDirection($('direction').value);
   undoStack.push($('prompt').value); if (undoStack.length > 10) undoStack.shift();
-  $('prompt').value = record.original; source = record.original; $('result').value = record.result; activeRecord = record; resultGuide = record.guideName || '';
+  $('prompt').value = record.original; source = record.original; $('result').value = record.result; activeRecord = record; resultGuide = record.guideName || ''; resultGuideId = record.guideId;
   $('result-title').value = record.title || ''; $('result-title-wrap').hidden = true; applied = false;
   $('result').hidden = false; $('empty-result').hidden = true; $('result-tag').textContent = '可编辑 · 已保存记录';
   showPanel('editor'); update(); showStatus('已载入收藏。'); $('prompt').focus();
@@ -454,7 +467,7 @@ $('confirm-accept').addEventListener('click', () => settleConfirmation(true));
 $('confirm-cancel').addEventListener('click', () => settleConfirmation(false));
 $('confirm-dialog').addEventListener('cancel', event => { event.preventDefault(); settleConfirmation(false); });
 function guideFields() { return { name: $('guide-name').value, category: $('guide-kind').value, description: $('guide-description').value, instructions: $('guide-instructions').value }; }
-function historyFields() { return { title: $('history-title').value, original: $('history-original').value, result: $('history-result').value, guideName: editingHistory?.guideName || '' }; }
+function historyFields() { return { title: $('history-title').value, original: $('history-original').value, result: $('history-result').value, guideName: editingHistory?.guideName || '', guideId: editingHistory?.guideId }; }
 function openGuide(record = null) {
   if (!historyEnabled) return showError('管理员尚未启用持久化存储。');
   editingGuide = record; $('guide-form').reset(); $('guide-form-error').textContent = '';

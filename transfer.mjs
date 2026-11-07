@@ -71,12 +71,15 @@ function normalizeFavorites(records, fallback) {
   if (records === null) return null;
   return unique(records.map((record, index) => {
     const prefix = `已收藏第 ${index + 1} 条`;
+    const { guideId } = record ?? {};
+    if (guideId !== undefined && guideId !== '' && (typeof guideId !== 'string' || !recordId.test(guideId))) fail(`${prefix}的指引 ID 无效。`);
     return {
       ...common(record, '已收藏', index, fallback),
       title: text(record, 'title', `${prefix}的标题`, 100, false),
       original: text(record, 'original', `${prefix}的原文`, 8000),
       result: text(record, 'result', `${prefix}的正文`, 48000),
-      guideName: text(record, 'guideName', `${prefix}的指引名称`, 80, false)
+      guideName: text(record, 'guideName', `${prefix}的指引名称`, 80, false),
+      ...(guideId === undefined ? {} : { guideId })
     };
   }), '已收藏');
 }

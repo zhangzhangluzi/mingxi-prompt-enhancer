@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { once } from 'node:events';
 import { scryptSync } from 'node:crypto';
 import { request as httpRequest } from 'node:http';
 import { createConnection } from 'node:net';
@@ -27,7 +28,7 @@ async function fixture(t, upstream, overrides = {}) {
     return response;
   };
   const login = async () => { const r = await call('/api/login', { password }); cookie = r.headers.get('set-cookie')?.split(';')[0]; return r; };
-  return { base, call, login, logs, getCookie: () => cookie, clearCookie: () => { cookie = ''; } };
+  return { server, base, call, login, logs, getCookie: () => cookie, clearCookie: () => { cookie = ''; } };
 }
 test('首次初始化、页面路由守卫、密码修改及凭据重启回读', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'prompt-auth-'));
@@ -174,6 +175,29 @@ test('历史 API 需要认证，保存后回读正确，登出后不可读', asy
   await call('/api/logout', {});
   assert.equal((await call('/api/history')).status, 401);
 });
+test('退出时撤销已经开始上传但尚未写入的历史请求', { timeout: 5000 }, async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'prompt-logout-write-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const { server, base, call, login, getCookie } = await fixture(t, undefined, { dataDir: dir, storageKey: 'c'.repeat(64) });
+  await login();
+  const body = JSON.stringify({ original: 'old session', result: 'pending result' });
+  const started = new Promise(resolve => server.prependOnceListener('request', req => req.once('data', resolve)));
+  const request = httpRequest(base + '/api/history', {
+    method: 'POST',
+    headers: { Origin: 'https://test.example', Cookie: getCookie(), 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+  });
+  t.after(() => request.destroy());
+  const reply = once(request, 'response');
+  request.write(body.slice(0, 5));
+  await started;
+  assert.equal((await call('/api/logout', {})).status, 200);
+  request.end(body.slice(5));
+  const [response] = await reply;
+  response.resume();
+  assert.equal(response.statusCode, 401);
+  await login();
+  assert.deepEqual((await (await call('/api/history')).json()).records, []);
+});
 test('未配置模型时安全启动且明确报错，不伪造增强结果', async t => {
   const { call, login } = await fixture(t, () => { throw new Error('must not call'); }, { apiKey: '' });
   const response = await login();
@@ -200,6 +224,7 @@ test('指引 CRUD、认证与来源校验、版本冲突及选定方向真正传
   assert.equal((await call('/api/guides/update', { ...created, name: '旧版本' })).status, 409);
   const result = await (await call('/api/enhance', { prompt: 'Write a short email in a friendly tone.', guideId: updated.id })).json();
   assert.equal(result.guideName, '客户措辞');
+  assert.equal(result.guideId, updated.id);
   assert.match(sent.messages[0].content, /不要增加赔偿承诺/);
   assert.match(sent.messages[0].content, /原文语言/);
   assert.equal(sent.messages[1].content, 'Write a short email in a friendly tone.');
@@ -264,7 +289,9 @@ test('多个 API 模块可保存、自定义名称可回读，增强按 moduleId
   assert.equal((await call('/api/models?id=missing-module')).status,404);
   assert.equal((await call('/api/enhance',{prompt:'使用备用模块',moduleId:module.module.id})).status,200); assert.deepEqual(used,['second-model']);
   const response=await call('/api/enhance',{prompt:'使用默认模块',moduleId:list.modules.find(x=>x.name==='环境默认模块').id}); assert.equal(response.status,200); assert.deepEqual(used,['second-model','default-model']);
-  const deleted=await call('/api/models/delete',{id:module.module.id,revision:module.module.revision}); assert.equal(deleted.status,200); assert.equal((await (await call('/api/models')).json()).modules.length,1);
+  const removals = await Promise.all(list.modules.map(({ id, revision }) => call('/api/models/delete', { id, revision })));
+  assert.deepEqual(removals.map(item => item.status).sort(), [200, 409]);
+  assert.equal((await (await call('/api/models')).json()).modules.length, 1);
 });
 
 test('导出包含三个模块，导入仅覆盖勾选模块且重复执行幂等', async t => {
@@ -285,11 +312,12 @@ test('导出包含三个模块，导入仅覆盖勾选模块且重复执行幂�
   assert.equal(before.format, 'mingxi-data-export'); assert.equal(before.version, 1);
   assert.equal(before.data.guides.length, 8); assert.equal(before.data.favorites.length, 1); assert.equal(before.data.models.length, 1);
   assert.equal(before.data.models[0].apiKey, 'secret-server-only');
+  assert.equal(Object.hasOwn(before.data.favorites[0], 'guideId'), false);
   assert.ok(!JSON.stringify(before).includes(password));
 
   const payload = structuredClone(before), now = '2026-09-19T08:00:00.000Z';
   payload.data.guides = [{ id: 'import-guide', revision: 4, createdAt: now, updatedAt: now, name: '恢复指引', category: '导入', description: '导入说明', instructions: '仅保留用户约束。' }];
-  payload.data.favorites = [{ id: 'import-favorite', revision: 2, createdAt: now, updatedAt: now, title: '', original: '导入原文', result: '导入正文', guideName: '恢复指引' }];
+  payload.data.favorites = [{ id: 'import-favorite', revision: 2, createdAt: now, updatedAt: now, title: '', original: '导入原文', result: '导入正文', guideName: '恢复指引', guideId: 'import-guide' }];
   payload.data.models = [{ id: 'import-model', revision: 3, createdAt: now, updatedAt: now, name: '恢复 API', protocol: 'chat', baseURL: 'https://restored.example/v1', apiKey: 'restored-key', model: 'restored-model', models: ['restored-model'] }];
 
   let response = await call('/api/data/import', { payload, modules: ['favorites'] }, { Origin: 'https://evil.example' });

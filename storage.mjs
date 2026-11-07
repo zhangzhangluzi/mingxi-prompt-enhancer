@@ -79,7 +79,11 @@ export async function createStore(directory, keyHex, name, defaults = []) {
     }),
     save: (record, { deduplicate = true } = {}) => serial(async () => {
       const records = await read();
-      const duplicate = deduplicate && name === 'history' && records.find(item => item.original === record.original && item.result === record.result && (item.title || '') === (record.title || ''));
+      const duplicate = deduplicate && name === 'history' && records.find(item =>
+        item.original === record.original && item.result === record.result &&
+        (item.title || '') === (record.title || '') &&
+        (record.guideId === undefined || record.guideId === (item.guideId ?? (item.guideName ? undefined : '')))
+      );
       if (duplicate) return duplicate;
       if (records.length >= 100) throw new StoreError(409, '已达到 100 条上限，请先删除不再需要的记录。');
       const now = new Date().toISOString();
