@@ -51,8 +51,10 @@ let modelSnapshot = '';
 let modelTransitioning = false;
 let statusTimer;
 let transferPayload = null;
+let exportRequest;
 let exportBusy = false;
 let importBusy = false;
+let importAttempt;
 let exportStatusTimer;
 let importStatusTimer;
 
@@ -98,6 +100,7 @@ function update() {
 }
 function lock(updatePath = true) {
   authenticated = false; epoch++;
+  cancelExport(); importAttempt = undefined;
   modelConfig = null; modelProviders = []; modelCatalog = []; modelModules = []; selectedModuleId = readPreference(preferenceKeys.module); modelSnapshot = ''; modelTransitioning = false; renderModelCatalog(); renderModuleSelectors(); $('model-form').reset(); $('model-provider').replaceChildren(); $('model-key-status').textContent = ''; $('model-feedback').textContent = ''; $('model-fields').disabled = true; $('model-editor').hidden = true;
   settleConfirmation(false);
   for (const id of ['guide-dialog', 'history-dialog', 'password-dialog', 'export-dialog']) $(id).close();
@@ -179,7 +182,7 @@ async function enhance() {
   const timer = setTimeout(() => request.abort('timeout'), 55000);
   try {
     if (modelModules.length && !selectedModuleId) { showError('请先选择一个 API 模块。'); busy = false; request = null; update(); return; }
-    const data = await api('/api/enhance', { prompt, guideId: $('direction').value, moduleId: selectedModuleId }, request.signal);
+    const data = await api('/api/enhance', { prompt, guideId: $('direction').value, moduleId: selectedModuleId, generation: modelModules.find(item => item.id === selectedModuleId)?.generation }, request.signal);
     if (!authenticated || request.signal.aborted) return;
     source = prompt; applied = false; activeRecord = null; resultGuide = data.guideName || ''; resultGuideId = data.guideId ?? '';
     $('result-title').value = ''; $('result-title-wrap').hidden = true;
@@ -219,7 +222,7 @@ async function saveResult(asCopy = false) {
   const previous = activeRecord;
   try {
     const fields = { title: $('result-title').value, original: source, result: $('result').value, guideName: resultGuide, guideId: resultGuideId, asCopy };
-    const data = await api(previous && !asCopy ? '/api/history/update' : '/api/history', { ...fields, ...(previous && !asCopy ? { id: previous.id, revision: previous.revision } : {}) }, AbortSignal.timeout(15000));
+    const data = await api(previous && !asCopy ? '/api/history/update' : '/api/history', { ...fields, ...(previous && !asCopy ? { id: previous.id, revision: previous.revision, generation: previous.generation } : {}) }, AbortSignal.timeout(15000));
     activeRecord = data.record;
     showStatus(previous && !asCopy ? '收藏已更新。' : '已保存到收藏。');
   } catch (error) { if (authenticated) showError(error.message); }
@@ -257,7 +260,17 @@ function transferFeedback(kind, message = '', error = false, delay = 0) {
     if (timerName === 'exportStatusTimer') exportStatusTimer = timer; else importStatusTimer = timer;
   }
 }
+function cancelExport() {
+  exportRequest?.abort();
+  exportRequest = undefined;
+  exportBusy = false;
+  $('export-submit').disabled = false;
+  $('export-generate').disabled = false;
+  $('export-submit').textContent = '验证并生成';
+}
 function clearExportData() {
+  cancelExport();
+  $('export-dialog').close();
   clearTimeout(exportStatusTimer); exportStatusTimer = undefined;
   $('export-form').reset(); $('export-error').textContent = '';
   $('export-json').value = ''; $('export-result').hidden = true; $('export-locked').hidden = false; $('export-copy').disabled = true;
@@ -271,15 +284,18 @@ function openExportDialog() {
 $('export-generate').addEventListener('click', openExportDialog);
 $('export-form').addEventListener('submit', async event => {
   event.preventDefault(); if (exportBusy) return;
+  const pending = new AbortController();
+  exportRequest = pending;
   exportBusy = true; $('export-submit').disabled = true; $('export-generate').disabled = true; $('export-submit').textContent = '正在验证…'; $('export-error').textContent = '';
   try {
-    const payload = await api('/api/data/export', { password: $('export-password').value }, AbortSignal.timeout(20000));
+    const payload = await api('/api/data/export', { password: $('export-password').value }, AbortSignal.any([pending.signal, AbortSignal.timeout(20000)]));
+    if (exportRequest !== pending || currentPanel !== 'data' || !$('export-dialog').open) return;
     $('export-json').value = JSON.stringify(payload, null, 2); $('export-result').hidden = false; $('export-locked').hidden = true; $('export-copy').disabled = false;
     $('export-dialog').close(); $('export-form').reset();
     transferFeedback('export', `已生成：指引 ${payload.data.guides.length} 条，已收藏 ${payload.data.favorites.length} 条，模型配置 ${payload.data.models.length} 条。`);
   } catch (error) {
-    if (authenticated) { $('export-password').value = ''; $('export-error').textContent = error.name === 'TimeoutError' ? '验证超时，请重试。' : error.message; $('export-password').focus(); }
-  } finally { exportBusy = false; $('export-submit').disabled = false; $('export-generate').disabled = false; $('export-submit').textContent = '验证并生成'; }
+    if (authenticated && exportRequest === pending) { $('export-password').value = ''; $('export-error').textContent = error.name === 'TimeoutError' ? '验证超时，请重试。' : error.message; $('export-password').focus(); }
+  } finally { if (exportRequest === pending) cancelExport(); }
 });
 $('export-copy').addEventListener('click', async () => {
   if (!$('export-json').value) return;
@@ -292,7 +308,7 @@ $('export-copy').addEventListener('click', async () => {
   }
 });
 function resetImportSelection(clearFeedback = true) {
-  transferPayload = null;
+  transferPayload = null; importAttempt = undefined;
   $('import-modules').hidden = true; $('import-submit-wrap').hidden = true; $('import-submit').disabled = true;
   if (clearFeedback) transferFeedback('import');
 }
@@ -330,13 +346,23 @@ for (const input of $('import-modules').querySelectorAll('input[type="checkbox"]
 $('import-submit').addEventListener('click', async () => {
   if (!transferPayload || importBusy) return;
   const modules = [...$('import-modules').querySelectorAll('input:checked')].map(input => input.value);
+  const payload = transferPayload;
+  const sessionEpoch = epoch;
   if (!modules.length) return transferFeedback('import', '请至少选择一个模块。', true);
   const names = { guides: '指引', favorites: '已收藏', models: '模型配置' };
   if (!await askConfirm(`导入将完整覆盖${modules.map(name => names[name]).join('、')}的当前数据，未选模块保持不变。是否继续？`)) return;
+  if (sessionEpoch !== epoch || payload !== transferPayload) return;
   importBusy = true; $('import-parse').disabled = true; $('import-submit').disabled = true;
   transferFeedback('import', '正在校验并导入…');
   try {
-    const result = await api('/api/data/import', { payload: transferPayload, modules }, AbortSignal.timeout(60000));
+    const selection = modules.join(',');
+    if (importAttempt?.selection !== selection) {
+      const { generations } = await api('/api/data/import', undefined, AbortSignal.timeout(15000));
+      if (sessionEpoch !== epoch || payload !== transferPayload) return;
+      importAttempt = { selection, importId: crypto.randomUUID(), generations };
+    }
+    const { importId, generations } = importAttempt;
+    const result = await api('/api/data/import', { payload, modules, importId, generations }, AbortSignal.timeout(60000));
     if (modules.includes('guides')) await loadGuides();
     if (modules.includes('favorites')) { activeRecord = null; await loadHistory(); update(); }
     if (modules.includes('models')) { modelConfig = null; await loadModel(); await loadModuleSelectors(); }
@@ -368,6 +394,7 @@ function directions() {
 }
 function rememberDirection(id) {
   selectedDirectionId = id;
+  $('direction').value = id;
   savePreference(preferenceKeys.direction, id);
 }
 $('direction').addEventListener('change', () => rememberDirection($('direction').value));
@@ -398,7 +425,7 @@ function renderGuides() {
     const card = element('article', '', 'record-card'); const top = element('div', '', 'record-top');
     top.append(element('h3', g.name), element('span', g.category, 'category-badge'));
     const actions = element('div', '', 'record-actions');
-    actions.append(action('使用指引', () => { if (busy) return showError('请等待当前增强完成。'); $('direction').value = g.id; savePreference(preferenceKeys.direction, g.id); showPanel('editor'); $('prompt').focus(); }), action('编辑', () => openGuide(g)), action('删除', () => removeRecord('guides', g), 'danger-button'));
+    actions.append(action('使用指引', () => { if (busy) return showError('请等待当前增强完成。'); rememberDirection(g.id); showPanel('editor'); $('prompt').focus(); }), action('编辑', () => openGuide(g)), action('删除', () => removeRecord('guides', g), 'danger-button'));
     card.append(top, element('p', g.description, 'record-preview'), element('p', g.instructions, 'record-preview'), actions); list.append(card);
   }
 }
@@ -425,8 +452,7 @@ async function restoreRecord(record) {
   if (generation !== epoch || !authenticated || !guidesLoaded) return;
   const legacyMatches = record.guideId === undefined && record.guideName ? guides.filter(guide => guide.name === record.guideName) : [];
   const directionId = record.guideId ?? (legacyMatches.length === 1 ? legacyMatches[0].id : '');
-  $('direction').value = guides.some(guide => guide.id === directionId) ? directionId : '';
-  rememberDirection($('direction').value);
+  rememberDirection(guides.some(guide => guide.id === directionId) ? directionId : '');
   undoStack.push($('prompt').value); if (undoStack.length > 10) undoStack.shift();
   $('prompt').value = record.original; source = record.original; $('result').value = record.result; activeRecord = record; resultGuide = record.guideName || ''; resultGuideId = record.guideId;
   $('result-title').value = record.title || ''; $('result-title-wrap').hidden = true; applied = false;
@@ -438,7 +464,7 @@ async function removeRecord(kind, record) {
   if (!await askConfirm(`确定删除“${record.name || record.title || record.original.slice(0, 40)}”？删除后无法恢复。`)) return;
   libraryBusy = true;
   try {
-    await api(`/api/${kind}/delete`, { id: record.id, revision: record.revision }, AbortSignal.timeout(15000));
+    await api(`/api/${kind}/delete`, { id: record.id, revision: record.revision, generation: record.generation }, AbortSignal.timeout(15000));
     if (kind === 'history' && activeRecord?.id === record.id) { activeRecord = null; update(); }
     if (kind === 'guides') await loadGuides(); else await loadHistory();
   } catch (error) { if (authenticated) showError(error.message); }
@@ -474,7 +500,7 @@ $('new-guide').addEventListener('click', () => openGuide());
 async function closeDialog(id) {
   if (modalBusy) return;
   if (id === 'password-dialog') { $('password-form').reset(); $('password-error').textContent = ''; $(id).close(); return; }
-  if (id === 'export-dialog') { $('export-form').reset(); $('export-error').textContent = ''; $(id).close(); return; }
+  if (id === 'export-dialog') { clearExportData(); return; }
   const fields = id === 'guide-dialog' ? guideFields() : historyFields();
   if (modalSnapshot !== JSON.stringify(fields) && !await askConfirm('修改尚未保存，确定放弃？')) return;
   $(id).close();
@@ -490,7 +516,7 @@ async function submitDialog(kind, event) {
   if (kind === 'history' && [...fields.original].length > maxInput) { errorBox.textContent = `原文不能超过 ${maxInput} 个字符。`; return; }
   modalBusy = true; $(prefix + '-submit').disabled = true;
   try {
-    await api(`/api/${kind}${record ? '/update' : ''}`, { ...fields, ...(record ? { id: record.id, revision: record.revision } : {}) }, AbortSignal.timeout(15000));
+    await api(`/api/${kind}${record ? '/update' : ''}`, { ...fields, ...(record ? { id: record.id, revision: record.revision, generation: record.generation } : {}) }, AbortSignal.timeout(15000));
     $(prefix + '-dialog').close();
     if (kind === 'guides') await loadGuides(); else { if (activeRecord?.id === record.id) { activeRecord = null; update(); } await loadHistory(); }
   } catch (error) { if (authenticated) errorBox.textContent = error.message; }
@@ -588,7 +614,7 @@ async function loadModel() {
 $('refresh-model').addEventListener('click', async () => {
   await guardModelDraft(loadModel);
 });
-$('model-delete').addEventListener('click', async () => { if (!modelConfig || modelBusy) return; if (!await askConfirm(`确定删除 API 模块“${modelConfig.name || '未命名'}”？`)) return; const deletedId = modelConfig.id; modelBusy = true; try { const data = await api('/api/models/delete', { id: deletedId, revision: modelConfig.revision }, AbortSignal.timeout(15000)); modelModules = data.modules || []; if (selectedModuleId === deletedId || !modelModules.some(item => item.id === selectedModuleId)) selectedModuleId = modelModules[0]?.id || ''; savePreference(preferenceKeys.module, selectedModuleId); renderModuleSelectors(); modelConfig = null; $('model-form').reset(); modelCatalog = []; renderModelCatalog(); rememberModelDraft(); $('model-editor').hidden = true; modelFeedback('API 模块已删除。'); } catch (error) { modelFeedback(error.message, true); } finally { modelBusy = false; } });
+$('model-delete').addEventListener('click', async () => { if (!modelConfig || modelBusy) return; if (!await askConfirm(`确定删除 API 模块“${modelConfig.name || '未命名'}”？`)) return; const deletedId = modelConfig.id; modelBusy = true; try { const data = await api('/api/models/delete', { id: deletedId, revision: modelConfig.revision, generation: modelConfig.generation }, AbortSignal.timeout(15000)); modelModules = data.modules || []; if (selectedModuleId === deletedId || !modelModules.some(item => item.id === selectedModuleId)) selectedModuleId = modelModules[0]?.id || ''; savePreference(preferenceKeys.module, selectedModuleId); renderModuleSelectors(); modelConfig = null; $('model-form').reset(); modelCatalog = []; renderModelCatalog(); rememberModelDraft(); $('model-editor').hidden = true; modelFeedback('API 模块已删除。'); } catch (error) { modelFeedback(error.message, true); } finally { modelBusy = false; } });
 $('model-provider').addEventListener('change', () => {
   const preset = modelProviders.find(p => p.id === $('model-provider').value);
   if (preset) { $('model-base').value = preset.baseURL; $('model-protocol').value = preset.protocol; modelCatalog = []; renderModelCatalog(); $('model-key').value = ''; modelFeedback('请填写密钥，再点击“拉取模型列表”。'); }
@@ -618,7 +644,7 @@ $('model-add').addEventListener('click', () => {
 });
 $('model-fetch').addEventListener('click', async () => {
   if (modelBusy) return;
-  const input = { ...(modelConfig?.id ? { id: modelConfig.id } : {}), moduleId: modelConfig?.id || '', name: $('model-module-name').value.trim(), revision: modelConfig?.revision || 1, protocol: $('model-protocol').value, baseURL: $('model-base').value.trim(), apiKey: $('model-key').value.trim() };
+  const input = { ...(modelConfig?.id ? { id: modelConfig.id } : {}), moduleId: modelConfig?.id || '', name: $('model-module-name').value.trim(), revision: modelConfig?.revision || 1, generation: modelConfig?.generation, protocol: $('model-protocol').value, baseURL: $('model-base').value.trim(), apiKey: $('model-key').value.trim() };
   const selected = $('model-name').value;
   modelBusy = true; $('model-fields').disabled = true; $('refresh-model').disabled = true; $('model-fetch').textContent = '正在拉取…'; modelFeedback('正在向服务商读取模型列表…');
   try {
@@ -630,7 +656,7 @@ $('model-fetch').addEventListener('click', async () => {
 });
 $('model-form').addEventListener('submit', async event => {
   event.preventDefault(); if (modelBusy) return;
-  const input = { ...(modelConfig?.id ? { id: modelConfig.id } : {}), revision: modelConfig?.revision || 1, name: $('model-module-name').value.trim(), protocol: $('model-protocol').value, baseURL: $('model-base').value.trim(), model: $('model-name').value.trim(), apiKey: $('model-key').value.trim(), models: modelCatalog };
+  const input = { ...(modelConfig?.id ? { id: modelConfig.id } : {}), revision: modelConfig?.revision || 1, generation: modelConfig?.generation, name: $('model-module-name').value.trim(), protocol: $('model-protocol').value, baseURL: $('model-base').value.trim(), model: $('model-name').value.trim(), apiKey: $('model-key').value.trim(), models: modelCatalog };
   modelBusy = true; $('model-fields').disabled = true; $('refresh-model').disabled = true; modelFeedback('正在加密保存…');
   try { const data = await api(modelConfig?.id ? '/api/models/update' : '/api/models', input, AbortSignal.timeout(15000)); const saved = data.module || data.config; displayModel(saved); modelModules = data.modules || modelModules; renderSavedModules(); selectedModuleId = saved?.id || selectedModuleId; savePreference(preferenceKeys.module, selectedModuleId); renderModuleSelectors(); modelFeedback(saved.ready ? '配置和模型列表已保存。可测试连接后开始增强。' : '连接信息和列表已保存。选择模型并保存后才能增强。'); }
   catch (error) { if (authenticated) modelFeedback(error.message, true); }
@@ -640,7 +666,7 @@ $('model-test').addEventListener('click', async () => {
   if (modelBusy || !modelConfig) return;
   if (modelDraftDirty()) return modelFeedback('请先保存当前修改，再测试连接。', true);
   modelBusy = true; $('model-fields').disabled = true; $('refresh-model').disabled = true; modelFeedback('正在测试已保存配置…');
-  try { await api('/api/model/test', { revision: modelConfig.revision, moduleId: modelConfig.id }, AbortSignal.timeout(55000)); modelFeedback('连接成功，模型已返回完整文本，可开始增强。'); }
+  try { await api('/api/model/test', { revision: modelConfig.revision, generation: modelConfig.generation, moduleId: modelConfig.id }, AbortSignal.timeout(55000)); modelFeedback('连接成功，模型已返回完整文本，可开始增强。'); }
   catch (error) { if (authenticated) modelFeedback(error.name === 'TimeoutError' ? '连接测试超时，请稍后重试。' : error.message, true); }
   finally { modelBusy = false; $('model-fields').disabled = !authenticated; $('refresh-model').disabled = false; }
 });

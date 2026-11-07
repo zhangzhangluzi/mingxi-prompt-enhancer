@@ -5,7 +5,7 @@ import { once } from 'node:events';
 import { scryptSync } from 'node:crypto';
 import { request as httpRequest } from 'node:http';
 import { createConnection } from 'node:net';
-import { mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -49,7 +49,7 @@ test('本机初始化、页面路由守卫、密码修改及凭据重启回读',
   t.after(() => rm(parent, { recursive: true, force: true }));
   const dir = join(parent, 'workspace');
   const storageKey = '9'.repeat(64), initialPassword = 'initial-password-123456', nextPassword = 'next-password-987654321';
-  const config = { dataDir: dir, storageKey };
+  const config = { dataDir: dir, storageKey, managed: true };
   const empty = await fixture(t, undefined, config, false);
   for (const path of ['/', '/setup', '/login', '/app', '/api/session', '/api/history']) {
     assert.equal((await fetch(empty.base + path, { redirect: 'manual' })).status, 503);
@@ -78,7 +78,8 @@ test('本机初始化、页面路由守卫、密码修改及凭据重启回读',
   assert.equal(response.status, 200);
   assert.equal((await first.call('/api/login', { password: initialPassword })).status, 401);
   assert.equal((await first.call('/api/login', { password: nextPassword })).status, 200);
-  const encrypted = await readFile(join(dir, 'auth.enc'));
+  const activeCredentials = (await readdir(dir)).find(name => /^auth-[a-f0-9]{32}\.enc$/.test(name));
+  const encrypted = await readFile(join(dir, activeCredentials));
   assert.equal(encrypted.includes(Buffer.from(initialPassword)), false); assert.equal(encrypted.includes(Buffer.from(nextPassword)), false);
   await first.stop();
   const second = await fixture(t, undefined, config, false);

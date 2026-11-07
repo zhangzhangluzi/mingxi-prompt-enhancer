@@ -10,7 +10,7 @@ chmod 600 .env
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
-将生成的 64 位十六进制值写入 `STORAGE_KEY`。生产环境必须使用真实 HTTPS 域名，并保持 `HOST=127.0.0.1`。新部署将 `PASSWORD_HASH` 留空。不要把服务器登录密码或模型 API 密钥写入代码仓库。
+将生成的 64 位十六进制值写入 `STORAGE_KEY`。生产环境必须使用真实 HTTPS 域名，并保持 `HOST=127.0.0.1`。初始化由本机管理员完成。不要把服务器登录密码或模型 API 密钥写入代码仓库。
 
 ## 2. 本机初始化与 systemd
 
@@ -31,7 +31,7 @@ sudo -v
 )
 ```
 
-本机开发时可用 `npm start -- --initialize` 接收相同的两行标准输入。仅有旧版 `PASSWORD_HASH`、尚未创建 `auth.enc` 的实例，在本机以服务用户用同一环境运行 `server.mjs --migrate-password-hash`，该命令会保留原密码和业务文件。已有 `auth.enc` 的实例直接升级。凭据故障时恢复原 `auth.enc` 后重启服务。
+本机开发时可用 `npm start -- --initialize` 接收相同的两行标准输入。旧版实例按下文离线迁移。仅持有旧版密码散列的实例可先通过 --migrate-password-hash 创建旧凭据文件，再核验全部业务文件。
 
 复制并按实际 Node 路径修改 [`deploy/prompt-enhancer.service`](deploy/prompt-enhancer.service)，然后执行：
 
@@ -64,7 +64,7 @@ sudo systemctl reload caddy
 
 依次确认：
 
-1. 未初始化或凭据损坏时，访问登录及业务路径返回 503，健康存活接口仍可访问。首次设置只能通过本机命令完成。
+1. 缺少有效状态时，存活检查返回 200，就绪和业务路径返回 503。
 2. 初始化后未登录访问 `/app/*` 会进入 `/login`，业务 API 返回 401。
 3. 登录后可读取指引、收藏和模型模块；模型配置保存后再进行固定短句连接测试。
 4. 修改密码后旧密码失效，新密码可登录；退出后原会话失效。
@@ -73,9 +73,15 @@ sudo systemctl reload caddy
 
 通过 Cloudflare 巡检时，请为 HTTP 客户端设置明确的 `User-Agent`，例如 `mingxi-healthcheck/1.0`。默认 `Python-urllib` 标识可能被 Cloudflare 的浏览器完整性检查拦截并返回 HTTP 403（错误 1010）。可用回环地址复核源站的就绪状态。
 
-## 数据与回退
+## 初始化、迁移与恢复
 
-`auth.enc`、`guides.enc`、`history.enc` 和 `model.enc` 位于 `DATA_DIR`，均使用 `STORAGE_KEY` 加密。升级前核对代码版本和数据文件校验值。回退到 2.2.7 或更早的版本时，应先在公网入口禁用 `/api/auth/initialize` 并验证原 `auth.enc` 可读，再切换代码。恢复需要与加密文件配套的原 `STORAGE_KEY`。
+首次部署时，使用应用服务账号从受控终端将两行相同的密码通过标准输入传给 `node --env-file=.env server.mjs --init-state`。先设置目录归属和权限，再执行初始化。命令与正常启动使用同一份环境配置。
+
+已有部署先停服务，再使用相同账号及环境执行 `node --env-file=.env server.mjs --migrate-state`。该命令验证 auth.enc、guides.enc、history.enc 和 model.enc 并登记原文件，沿用原密文。用 `--check-state` 确认清单和数据可读后启动服务。两条命令只输出状态及记录数。
+
+`state.enc` 是当前数据的提交点。故障时先停写，恢复清单及其引用的准确加密文件，用 `--check-state` 验证后重新启动。初始化与迁移命令应在服务停止时执行。开放新版写入前可切回原代码及原格式，接收新写入后按当前清单恢复，降级前须离线验证数据转换。
+
+`TRUST_PROXY_CLIENT=true` 仅用于回环反代已覆盖 `X-Workbench-Client` 并已校验上游来源的部署。直接运行或普通反代保持默认 false。生成和导入继续使用原有 JSON 格式。
 
 ## 运行边界
 

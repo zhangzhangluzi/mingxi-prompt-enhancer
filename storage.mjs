@@ -21,7 +21,7 @@ export function assertStoreCapacity(name, records) {
   return json;
 }
 // 兼容旧的 history.enc 数组格式。串行读改写 + revision 防止并发覆盖。
-export async function createStore(directory, keyHex, name, defaults = []) {
+export async function createStore(directory, keyHex, name, defaults = [], managed) {
   if (!directory || !/^[a-f0-9]{64}$/.test(keyHex || '')) throw new Error('存储需要 DATA_DIR 和 32 字节 STORAGE_KEY。');
   if (!['history', 'guides', 'model'].includes(name)) throw new Error('无效存储名称。');
   await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -30,6 +30,7 @@ export async function createStore(directory, keyHex, name, defaults = []) {
   let queue = Promise.resolve();
   let cache;
   async function read(fresh = false) {
+    if (managed) return managed.read(name).map(record => ({ revision: 1, updatedAt: record.createdAt, ...record }));
     if (!fresh && cache) return structuredClone(cache);
     let bytes;
     try { bytes = await readFile(filename); } catch (error) {
@@ -44,7 +45,8 @@ export async function createStore(directory, keyHex, name, defaults = []) {
     cache = records.map(record => ({ revision: 1, updatedAt: record.createdAt, ...record }));
     return structuredClone(cache);
   }
-  async function write(records) {
+  async function write(records, beforeCommit) {
+    if (managed) return managed.commit({ [name]: records }, undefined, beforeCommit);
     const json = assertStoreCapacity(name, records);
     const iv = randomBytes(12);
     const cipher = createCipheriv('aes-256-gcm', key, iv);
@@ -77,7 +79,7 @@ export async function createStore(directory, keyHex, name, defaults = []) {
       await write(next);
       return structuredClone(next);
     }),
-    save: (record, { deduplicate = true } = {}) => serial(async () => {
+    save: (record, { deduplicate = true, beforeCommit } = {}) => serial(async () => {
       const records = await read();
       const duplicate = deduplicate && name === 'history' && records.find(item =>
         item.original === record.original && item.result === record.result &&
@@ -88,32 +90,33 @@ export async function createStore(directory, keyHex, name, defaults = []) {
       if (records.length >= 100) throw new StoreError(409, '已达到 100 条上限，请先删除不再需要的记录。');
       const now = new Date().toISOString();
       const next = { ...record, id: randomBytes(12).toString('hex'), revision: 1, createdAt: now, updatedAt: now };
-      await write([next, ...records]);
+      await write([next, ...records], beforeCommit);
       return next;
     }),
-    update: (id, revision, record) => serial(async () => {
+    update: (id, revision, record, beforeCommit) => serial(async () => {
       const records = await read();
       const index = find(records, id, revision);
       const next = { ...records[index], ...record, id, revision: revision + 1, createdAt: records[index].createdAt, updatedAt: new Date().toISOString() };
       records[index] = next;
-      await write(records);
+      await write(records, beforeCommit);
       return next;
     }),
-    remove: (id, revision) => serial(async () => {
+    remove: (id, revision, beforeCommit) => serial(async () => {
       const records = await read();
       records.splice(find(records, id, revision), 1);
-      await write(records);
+      await write(records, beforeCommit);
     })
   };
 }
-export const createHistory = (directory, keyHex) => createStore(directory, keyHex, 'history');
+export const createHistory = (directory, keyHex, managed) => createStore(directory, keyHex, 'history', [], managed);
 
-export async function createCredentialStore(directory, keyHex) {
+export async function createCredentialStore(directory, keyHex, managed) {
   if (!directory || !/^[a-f0-9]{64}$/.test(keyHex || '')) throw new Error('凭据存储需要 DATA_DIR 和 32 字节 STORAGE_KEY。');
   const key = Buffer.from(keyHex, 'hex');
   const filename = join(directory, 'auth.enc');
   let queue = Promise.resolve();
   async function read() {
+    if (managed) return managed.read('auth');
     let bytes;
     try { bytes = await readFile(filename); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
     const decrypt = createDecipheriv('aes-256-gcm', key, bytes.subarray(0, 12));
@@ -122,15 +125,17 @@ export async function createCredentialStore(directory, keyHex) {
     if (!record || record.version !== 1 || !/^[a-f0-9]{32}:[a-f0-9]{128}$/.test(record.passwordHash || '')) throw new Error('凭据存储格式无效。');
     return record;
   }
-  async function write(passwordHash, initialize = false) {
+  async function write(passwordHash, initialize = false, beforeCommit) {
     if (!/^[a-f0-9]{32}:[a-f0-9]{128}$/.test(passwordHash || '')) throw new Error('密码哈希格式无效。');
     const iv = randomBytes(12);
     const cipher = createCipheriv('aes-256-gcm', key, iv);
     const record = { version: 1, passwordHash, updatedAt: new Date().toISOString() };
+    if (managed) return managed.commit({ auth: record }, undefined, beforeCommit);
     const encrypted = Buffer.concat([cipher.update(JSON.stringify(record), 'utf8'), cipher.final()]);
     const temp = `${filename}.${randomBytes(8).toString('hex')}.tmp`;
     try {
       await writeFile(temp, Buffer.concat([iv, cipher.getAuthTag(), encrypted]), { mode: 0o600, flag: 'wx', flush: true });
+      await beforeCommit?.();
       if (initialize) await link(temp, filename);
       else await rename(temp, filename);
       const dir = await open(directory, 'r');
@@ -151,11 +156,11 @@ export async function createCredentialStore(directory, keyHex) {
         throw error;
       }
     }),
-    replace: (expected, passwordHash) => serial(async () => {
+    replace: (expected, passwordHash, beforeCommit) => serial(async () => {
       const current = await read();
       if (!current) throw new StoreError(409, '管理员密码尚未初始化。');
       if (current.passwordHash !== expected) throw new StoreError(409, '密码已被其他会话修改，请重新登录。');
-      await write(passwordHash);
+      await write(passwordHash, false, beforeCommit);
     })
   };
 }
