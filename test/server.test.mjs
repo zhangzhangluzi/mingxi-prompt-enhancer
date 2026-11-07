@@ -4,7 +4,7 @@ import { once } from 'node:events';
 import { scryptSync } from 'node:crypto';
 import { request as httpRequest } from 'node:http';
 import { createConnection } from 'node:net';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApp, configFromEnv } from '../server.mjs';
@@ -147,6 +147,25 @@ test('健康检查支持 GET/HEAD，readiness 在存储损坏时失败，静态�
   await login(); await call('/api/history', { original: '原文', result: '结果' });
   await writeFile(join(dir, 'history.enc'), 'corrupted');
   response = await call('/health/ready'); assert.equal(response.status, 503); assert.deepEqual(await response.json(), { status: 'unavailable' });
+});
+test('首次设置前可就绪，初始化后凭据文件丢失则暂停就绪', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'prompt-health-auth-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const { call } = await fixture(t, undefined, { dataDir: dir, storageKey: 'f'.repeat(64), passwordHash: '' });
+  assert.equal((await call('/health/ready')).status, 200);
+  assert.equal((await call('/api/auth/initialize', { password, confirmation: password })).status, 200);
+  assert.equal((await call('/health/ready')).status, 200);
+
+  const credentials = join(dir, 'auth.enc');
+  const moved = join(dir, 'auth-moved.enc');
+  await rename(credentials, moved);
+  const unavailable = await call('/health/ready');
+  assert.equal(unavailable.status, 503);
+  assert.deepEqual(await unavailable.json(), { status: 'unavailable' });
+  assert.equal((await call('/health/live')).status, 200);
+
+  await rename(moved, credentials);
+  assert.equal((await call('/health/ready')).status, 200);
 });
 test('结构化日志可按请求追踪且不记录密码、密钥、提示语或模型正文', async t => {
   const secretPassword = 'wrong-password-marker';

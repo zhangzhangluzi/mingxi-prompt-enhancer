@@ -103,9 +103,10 @@ export async function createApp(config, fetchModel = safeModelFetch) {
   const listModels = async () => modelStore ? await modelStore.list() : [initialModel];
   const currentModel = async (id = '') => { const records = await listModels(); if (id) return records.find(item => item.id === id); return records[0] || initialModel; };
   const storageReady = async () => {
+    const requiresCredentials = Boolean(credentials && passwordHash);
     try {
-      await Promise.all([credentials ? credentials.get() : Promise.resolve(), modelStore ? modelStore.verify() : Promise.resolve(), guides ? guides.verify() : Promise.resolve(), history ? history.verify() : Promise.resolve()]);
-      return true;
+      const [storedPasswordHash] = await Promise.all([credentials?.get(), modelStore?.verify(), guides?.verify(), history?.verify()]);
+      return !requiresCredentials || Boolean(storedPasswordHash);
     } catch { return false; }
   };
   const safeModel = item => ({ ...publicModel(item), id: item.id, name: item.name || '未命名 API 模块' });

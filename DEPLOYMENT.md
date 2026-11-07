@@ -52,6 +52,8 @@ sudo systemctl reload caddy
 5. 导入导出页面默认不显示 JSON，必须再次验证当前密码后才生成导出内容。
 6. `GET /health/live` 返回最小存活状态，`GET /health/ready` 能读取并解密存储；监控应将 503 视为不可用。
 
+通过 Cloudflare 巡检时，请为 HTTP 客户端设置明确的 `User-Agent`，例如 `mingxi-healthcheck/1.0`。默认 `Python-urllib` 标识可能被 Cloudflare 的浏览器完整性检查拦截并返回 HTTP 403（错误 1010）。可用回环地址复核源站的就绪状态。
+
 ## 数据与回退
 
 `auth.enc`、`guides.enc`、`history.enc` 和 `model.enc` 位于 `DATA_DIR`，均使用 `STORAGE_KEY` 加密。升级前保存代码版本和数据文件校验值；回退时只替换经过验证的代码版本，不覆盖环境文件和数据目录。更换 `STORAGE_KEY` 会使既有数据无法解密。
