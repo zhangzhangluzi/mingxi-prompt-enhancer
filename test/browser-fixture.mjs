@@ -1,16 +1,20 @@
 // 仅用于浏览器交互验收，不连接模型，不用于生产。
 import { createApp } from '../server.mjs';
+import { createCredentialStore } from '../storage.mjs';
 import { scryptSync, randomBytes } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 const dir = await mkdtemp(join(tmpdir(), 'prompt-browser-'));
 const salt = 'a'.repeat(32);
+const storageKey = randomBytes(32).toString('hex');
+if (!process.env.TEST_UNINITIALIZED) {
+  await (await createCredentialStore(dir, storageKey)).initialize(`${salt}:${scryptSync('local-test-password', salt, 64).toString('hex')}`);
+}
 const app = await createApp({
   origin: 'http://127.0.0.1:3080', secure: false,
-  passwordHash: process.env.TEST_UNINITIALIZED ? '' : `${salt}:${scryptSync('local-test-password', salt, 64).toString('hex')}`,
   modelURL: 'https://mock.invalid', apiKey: process.env.TEST_MODEL_UNCONFIGURED ? '' : 'mock', model: 'mock', timeoutMs: 45000,
-  dataDir: dir, storageKey: randomBytes(32).toString('hex'), log: () => {}
+  dataDir: dir, storageKey, log: () => {}
 }, async (url, options) => {
   await new Promise(resolve => setTimeout(resolve, 800));
   if (options.method === 'GET') return Response.json({ data: [{ id: 'demo-text-model' }, { id: 'demo-reasoning-model' }] });

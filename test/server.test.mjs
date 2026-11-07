@@ -1,24 +1,38 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { scryptSync } from 'node:crypto';
 import { request as httpRequest } from 'node:http';
 import { createConnection } from 'node:net';
-import { mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createApp, configFromEnv } from '../server.mjs';
-import { DATA_IMPORT_MAX_BYTES } from '../storage.mjs';
+import { createCredentialStore, createHistory, DATA_IMPORT_MAX_BYTES } from '../storage.mjs';
 
 const password = 'test-password-123456789';
 const salt = 'a'.repeat(32);
 const passwordHash = `${salt}:${scryptSync(password, salt, 64).toString('hex')}`;
-async function fixture(t, upstream, overrides = {}) {
+function provision(command, dataDir, storageKey, input, legacyHash = '') {
+  return spawnSync(process.execPath, [fileURLToPath(new URL('../server.mjs', import.meta.url)), command], {
+    env: { PUBLIC_ORIGIN: 'https://test.example', DATA_DIR: dataDir, STORAGE_KEY: storageKey, PASSWORD_HASH: legacyHash },
+    input, encoding: 'utf8', timeout: 5000
+  });
+}
+async function fixture(t, upstream, overrides = {}, seed = true) {
   const logs = [];
   const config = { origin: 'https://test.example', secure: true, passwordHash, modelURL: 'https://model.example/v1/chat/completions', apiKey: 'secret-server-only', model: 'test', timeoutMs: 100, log: entry => logs.push(entry), ...overrides };
+  if (seed && config.dataDir) await (await createCredentialStore(config.dataDir, config.storageKey)).initialize(config.passwordHash);
   const server = await createApp(config, upstream);
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => { server.closeAllConnections(); server.close(); });
+  const stop = async () => {
+    if (!server.listening) return;
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+  };
+  t.after(stop);
   const base = `http://127.0.0.1:${server.address().port}`;
   let cookie = '';
   const call = async (path, data, headers = {}) => {
@@ -28,45 +42,68 @@ async function fixture(t, upstream, overrides = {}) {
     return response;
   };
   const login = async () => { const r = await call('/api/login', { password }); cookie = r.headers.get('set-cookie')?.split(';')[0]; return r; };
-  return { server, base, call, login, logs, getCookie: () => cookie, clearCookie: () => { cookie = ''; } };
+  return { server, base, call, login, logs, stop, getCookie: () => cookie, clearCookie: () => { cookie = ''; } };
 }
-test('首次初始化、页面路由守卫、密码修改及凭据重启回读', async t => {
-  const dir = await mkdtemp(join(tmpdir(), 'prompt-auth-'));
-  t.after(() => rm(dir, { recursive: true, force: true }));
+test('本机初始化、页面路由守卫、密码修改及凭据重启回读', async t => {
+  const parent = await mkdtemp(join(tmpdir(), 'prompt-auth-'));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const dir = join(parent, 'workspace');
   const storageKey = '9'.repeat(64), initialPassword = 'initial-password-123456', nextPassword = 'next-password-987654321';
-  const first = await fixture(t, undefined, { dataDir: dir, storageKey, passwordHash: '' });
-  let session = await (await first.call('/api/session')).json();
-  assert.equal(session.initialized, false); assert.equal(session.authenticated, false);
-  for (const [path, location] of [['/', '/setup'], ['/login', '/setup'], ['/app', '/setup'], ['/app/guides', '/setup'], ['/app/history', '/setup'], ['/app/models', '/setup'], ['/app/data', '/setup']]) {
-    const response = await fetch(first.base + path, { redirect: 'manual' });
-    assert.equal(response.status, 302); assert.equal(response.headers.get('location'), location);
+  const config = { dataDir: dir, storageKey };
+  const empty = await fixture(t, undefined, config, false);
+  for (const path of ['/', '/setup', '/login', '/app', '/api/session', '/api/history']) {
+    assert.equal((await fetch(empty.base + path, { redirect: 'manual' })).status, 503);
   }
-  assert.equal((await fetch(first.base + '/setup')).status, 200);
-  assert.equal((await first.call('/api/history')).status, 409);
-  assert.equal((await first.call('/api/auth/initialize', { password: 'short', confirmation: 'short' })).status, 400);
-  assert.equal((await first.call('/api/auth/initialize', { password: initialPassword, confirmation: 'different-password-1' })).status, 400);
-  let response = await first.call('/api/auth/initialize', { password: initialPassword, confirmation: initialPassword });
-  assert.equal(response.status, 200); assert.equal((await response.json()).authenticated, true);
-  assert.equal((await fetch(first.base + '/setup', { redirect: 'manual', headers: { Cookie: response.headers.get('set-cookie')?.split(';')[0] || '' } })).headers.get('location'), '/app');
-  assert.equal((await first.call('/app')).status, 200);
-  first.clearCookie();
-  for (const path of ['/app', '/app/editor', '/app/guides', '/app/history', '/app/models', '/app/data']) {
-    response = await fetch(first.base + path, { redirect: 'manual' });
+  assert.equal((await empty.call('/api/auth/initialize', { password: initialPassword, confirmation: initialPassword })).status, 404);
+  assert.equal((await empty.call('/health/live')).status, 200);
+  assert.equal((await empty.call('/health/ready')).status, 503);
+  await assert.rejects(stat(dir), { code: 'ENOENT' });
+  await empty.stop();
+  assert.equal(provision('--initialize', dir, storageKey, `${initialPassword}\n${nextPassword}\n`).status, 1);
+  const created = provision('--initialize', dir, storageKey, `${initialPassword}\n${initialPassword}\n`);
+  assert.equal(created.status, 0, created.stderr);
+  assert.ok(!created.stdout.includes(initialPassword));
+  assert.equal(provision('--initialize', dir, storageKey, `${nextPassword}\n${nextPassword}\n`).status, 1);
+  const first = await fixture(t, undefined, config, false);
+  assert.equal((await first.call('/health/ready')).status, 200);
+  for (const path of ['/setup', '/app', '/app/editor', '/app/guides', '/app/history', '/app/models', '/app/data']) {
+    const response = await fetch(first.base + path, { redirect: 'manual' });
     assert.equal(response.status, 302); assert.equal(response.headers.get('location'), '/login');
   }
   assert.equal((await first.call('/api/history')).status, 401);
   assert.equal((await first.call('/api/login', { password: initialPassword })).status, 200);
   assert.equal((await first.call('/api/password', { currentPassword: 'wrong-password-123456', newPassword: nextPassword, confirmation: nextPassword })).status, 401);
   assert.equal((await (await first.call('/api/session')).json()).authenticated, true);
-  response = await first.call('/api/password', { currentPassword: initialPassword, newPassword: nextPassword, confirmation: nextPassword });
+  const response = await first.call('/api/password', { currentPassword: initialPassword, newPassword: nextPassword, confirmation: nextPassword });
   assert.equal(response.status, 200);
   assert.equal((await first.call('/api/login', { password: initialPassword })).status, 401);
   assert.equal((await first.call('/api/login', { password: nextPassword })).status, 200);
-  const encrypted = await (await import('node:fs/promises')).readFile(join(dir, 'auth.enc'));
+  const encrypted = await readFile(join(dir, 'auth.enc'));
   assert.equal(encrypted.includes(Buffer.from(initialPassword)), false); assert.equal(encrypted.includes(Buffer.from(nextPassword)), false);
-  const second = await fixture(t, undefined, { dataDir: dir, storageKey, passwordHash: '' });
-  session = await (await second.call('/api/session')).json(); assert.equal(session.initialized, true); assert.equal(session.authenticated, false);
+  await first.stop();
+  const second = await fixture(t, undefined, config, false);
+  const session = await (await second.call('/api/session')).json(); assert.equal(session.initialized, true); assert.equal(session.authenticated, false);
   assert.equal((await second.call('/api/login', { password: nextPassword })).status, 200);
+});
+test('旧版哈希仅能通过本机命令迁移且保留既有数据', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'prompt-auth-migrate-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const storageKey = '2'.repeat(64), config = { dataDir: dir, storageKey };
+  await (await createHistory(dir, storageKey)).save({ original: '旧原文', result: '旧收藏' });
+  const historyBefore = await readFile(join(dir, 'history.enc'));
+  const locked = await fixture(t, undefined, config, false);
+  assert.equal((await locked.call('/api/login', { password })).status, 503);
+  await locked.stop();
+  assert.equal(provision('--initialize', dir, storageKey, `${password}\n${password}\n`).status, 1);
+  const migrated = provision('--migrate-password-hash', dir, storageKey, '', passwordHash);
+  assert.equal(migrated.status, 0, migrated.stderr);
+  const authBefore = await readFile(join(dir, 'auth.enc'));
+  assert.equal(provision('--migrate-password-hash', dir, storageKey, '', passwordHash).status, 1);
+  assert.deepEqual(await readFile(join(dir, 'auth.enc')), authBefore);
+  assert.deepEqual(await readFile(join(dir, 'history.enc')), historyBefore);
+  const live = await fixture(t, undefined, config, false);
+  assert.equal((await live.login()).status, 200);
+  assert.equal((await (await live.call('/api/history')).json()).records[0].result, '旧收藏');
 });
 test('访问保护、会话 Cookie、安全响应头、来源验证、退出失效', async t => {
   const { call, login } = await fixture(t, () => { throw new Error('must not call'); });
@@ -148,24 +185,42 @@ test('健康检查支持 GET/HEAD，readiness 在存储损坏时失败，静态�
   await writeFile(join(dir, 'history.enc'), 'corrupted');
   response = await call('/health/ready'); assert.equal(response.status, 503); assert.deepEqual(await response.json(), { status: 'unavailable' });
 });
-test('首次设置前可就绪，初始化后凭据文件丢失则暂停就绪', async t => {
+test('已登录时凭据丢失或损坏，重启前后均锁定且可恢复原数据', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'prompt-health-auth-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
-  const { call } = await fixture(t, undefined, { dataDir: dir, storageKey: 'f'.repeat(64), passwordHash: '' });
-  assert.equal((await call('/health/ready')).status, 200);
-  assert.equal((await call('/api/auth/initialize', { password, confirmation: password })).status, 200);
-  assert.equal((await call('/health/ready')).status, 200);
-
+  const config = { dataDir: dir, storageKey: 'f'.repeat(64) };
+  const first = await fixture(t, undefined, config);
+  assert.equal((await first.login()).status, 200);
+  assert.equal((await first.call('/api/history', { original: '原文', result: '收藏仍在' })).status, 200);
   const credentials = join(dir, 'auth.enc');
   const moved = join(dir, 'auth-moved.enc');
   await rename(credentials, moved);
-  const unavailable = await call('/health/ready');
-  assert.equal(unavailable.status, 503);
-  assert.deepEqual(await unavailable.json(), { status: 'unavailable' });
-  assert.equal((await call('/health/live')).status, 200);
-
+  const denied = await first.call('/api/history');
+  assert.equal(denied.status, 503);
+  assert.equal((await denied.json()).code, 'credentials_unavailable');
+  assert.deepEqual(await (await first.call('/health/ready')).json(), { status: 'unavailable' });
+  assert.equal((await first.call('/health/live')).status, 200);
+  const oldCookie = first.getCookie();
+  await first.stop();
+  const restarted = await fixture(t, undefined, config, false);
+  assert.equal((await restarted.call('/health/ready')).status, 503);
+  assert.equal((await restarted.call('/api/auth/initialize', { password, confirmation: password })).status, 404);
+  assert.equal((await restarted.call('/api/login', { password })).status, 503);
+  await assert.rejects(stat(credentials), { code: 'ENOENT' });
   await rename(moved, credentials);
-  assert.equal((await call('/health/ready')).status, 200);
+  assert.equal((await restarted.call('/health/ready')).status, 503);
+  await restarted.stop();
+  const recovered = await fixture(t, undefined, config, false);
+  assert.equal((await recovered.call('/api/history', undefined, { Cookie: oldCookie })).status, 401);
+  assert.equal((await recovered.login()).status, 200);
+  assert.equal((await (await recovered.call('/api/history')).json()).records[0].result, '收藏仍在');
+  await writeFile(credentials, 'corrupted');
+  assert.equal((await recovered.call('/api/history', { original: '不应写入', result: '不应写入' })).status, 503);
+  await recovered.stop();
+  const corrupt = await fixture(t, undefined, config, false);
+  assert.equal((await corrupt.call('/health/live')).status, 200);
+  assert.equal((await corrupt.call('/health/ready')).status, 503);
+  assert.equal((await readFile(credentials, 'utf8')), 'corrupted');
 });
 test('结构化日志可按请求追踪且不记录密码、密钥、提示语或模型正文', async t => {
   const secretPassword = 'wrong-password-marker';
@@ -200,7 +255,14 @@ test('退出时撤销已经开始上传但尚未写入的历史请求', { timeou
   const { server, base, call, login, getCookie } = await fixture(t, undefined, { dataDir: dir, storageKey: 'c'.repeat(64) });
   await login();
   const body = JSON.stringify({ original: 'old session', result: 'pending result' });
-  const started = new Promise(resolve => server.prependOnceListener('request', req => req.once('data', resolve)));
+  const started = new Promise(resolve => server.prependOnceListener('request', req => {
+    const listenerAdded = event => {
+      if (event !== 'readable') return;
+      req.off('newListener', listenerAdded);
+      resolve();
+    };
+    req.on('newListener', listenerAdded);
+  }));
   const request = httpRequest(base + '/api/history', {
     method: 'POST',
     headers: { Origin: 'https://test.example', Cookie: getCookie(), 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }

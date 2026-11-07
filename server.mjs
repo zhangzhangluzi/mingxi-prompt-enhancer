@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { randomBytes, randomUUID, scrypt, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { MAX_INPUT, SYSTEM_PROMPT } from './prompt.mjs';
 import { assertStoreCapacity, createCredentialStore, createHistory, createStore, DATA_IMPORT_MAX_BYTES, StoreError } from './storage.mjs';
@@ -13,8 +13,9 @@ const derive = promisify(scrypt);
 const SESSION_MS = 8 * 60 * 60 * 1000;
 const PASSWORD_HASH_PATTERN = /^[a-f0-9]{32}:[a-f0-9]{128}$/;
 class HttpError extends Error {
-  constructor(status, message) { super(message); this.status = status; }
+  constructor(status, message, code) { super(message); this.status = status; this.code = code; }
 }
+const credentialsUnavailable = () => new HttpError(503, '管理员凭据不可用，请联系管理员。', 'credentials_unavailable');
 function validPassword(password) { return typeof password === 'string' && [...password].length >= 16 && [...password].length <= 256; }
 async function hashPassword(password) {
   const salt = randomBytes(16).toString('hex');
@@ -29,7 +30,6 @@ export function configFromEnv(env = process.env) {
   const origin = new URL(env.PUBLIC_ORIGIN || '');
   const local = env.ALLOW_INSECURE_LOCAL === 'true' && ['localhost', '127.0.0.1'].includes(origin.hostname);
   if (origin.origin !== env.PUBLIC_ORIGIN || origin.username || origin.password || (origin.protocol !== 'https:' && !(local && origin.protocol === 'http:'))) throw new Error('PUBLIC_ORIGIN 必须为 HTTPS 来源；仅显式允许本机 HTTP 调试。');
-  if (env.PASSWORD_HASH && !PASSWORD_HASH_PATTERN.test(env.PASSWORD_HASH)) throw new Error('PASSWORD_HASH 格式无效。');
   const base = env.MODEL_BASE_URL ? new URL(env.MODEL_BASE_URL) : null;
   if (base && (base.protocol !== 'https:' || base.username || base.password || base.search || base.hash)) throw new Error('模型地址必须为不含凭据或参数的 HTTPS URL。');
   const protocol = env.MODEL_PROTOCOL || 'chat';
@@ -39,6 +39,29 @@ export function configFromEnv(env = process.env) {
   const host = env.HOST || '127.0.0.1';
   if (!['127.0.0.1', '::1'].includes(host)) throw new Error('服务仅允许监听回环地址，请通过 HTTPS 反向代理访问。');
   return { origin: origin.origin, secure: !local, host, port: Number(env.PORT || 3080), passwordHash: env.PASSWORD_HASH || '', protocol, baseURL: base?.href.replace(/\/$/, '') || '', modelURL: base ? `${base.href.replace(/\/$/, '')}/chat/completions` : null, apiKey: env.MODEL_API_KEY, model: env.MODEL_NAME, timeoutMs: 45000, dataDir: env.DATA_DIR, storageKey: env.STORAGE_KEY };
+}
+async function provisionCredentials(config, command) {
+  const credentials = await createCredentialStore(config.dataDir, config.storageKey);
+  if (command === '--migrate-password-hash') {
+    if (!PASSWORD_HASH_PATTERN.test(config.passwordHash)) throw new Error('需要有效的旧版 PASSWORD_HASH。');
+    await credentials.initialize(config.passwordHash);
+    return;
+  }
+  const files = await readdir(config.dataDir).catch(error => {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  });
+  if (files.some(name => name.endsWith('.enc'))) throw new Error('数据目录已有加密文件，请核对并恢复现有凭据。');
+  const chunks = [];
+  let length = 0;
+  for await (const chunk of process.stdin) {
+    length += chunk.length;
+    if (length > 4096) throw new Error('初始化输入过长。');
+    chunks.push(chunk);
+  }
+  const [password, confirmation, extra] = Buffer.concat(chunks).toString('utf8').replace(/\r?\n$/, '').split(/\r?\n/);
+  if (extra !== undefined || !validPassword(password) || password !== confirmation) throw new Error('请输入两行相同的 16–256 字符密码。');
+  await credentials.initialize(await hashPassword(password));
 }
 async function bodyJSON(req, maxBytes = 65536) {
   if (req.headers['content-type']?.split(';')[0] !== 'application/json') throw new HttpError(415, '请使用 JSON 请求。');
@@ -90,23 +113,19 @@ function logRoute(path) {
 }
 export async function createApp(config, fetchModel = safeModelFetch) {
   const credentials = config.dataDir ? await createCredentialStore(config.dataDir, config.storageKey) : null;
-  let passwordHash = credentials ? await credentials.get() : '';
-  if (!passwordHash && config.passwordHash) {
-    if (credentials) await credentials.initialize(config.passwordHash);
-    passwordHash = config.passwordHash;
-  }
-  const history = config.dataDir ? await createHistory(config.dataDir, config.storageKey) : null;
-  const guides = config.dataDir ? await createStore(config.dataDir, config.storageKey, 'guides', DEFAULT_GUIDES) : null;
+  let passwordHash = credentials ? await credentials.get().catch(() => '') : config.passwordHash || '';
+  const dataDir = passwordHash && config.dataDir;
+  const history = dataDir ? await createHistory(dataDir, config.storageKey) : null;
+  const guides = dataDir ? await createStore(dataDir, config.storageKey, 'guides', DEFAULT_GUIDES) : null;
   const initialModelTime = new Date().toISOString();
   const initialModel = { id: 'active-model', revision: 1, createdAt: initialModelTime, updatedAt: initialModelTime, name: '环境默认模块', protocol: config.protocol || 'chat', baseURL: config.baseURL ?? config.modelURL?.replace(/\/chat\/completions$/, '') ?? '', apiKey: config.apiKey || '', model: config.model || '', models: config.model ? [config.model] : [] };
-  const modelStore = config.dataDir ? await createStore(config.dataDir, config.storageKey, 'model', [initialModel]) : null;
+  const modelStore = dataDir ? await createStore(dataDir, config.storageKey, 'model', [initialModel]) : null;
   const listModels = async () => modelStore ? await modelStore.list() : [initialModel];
   const currentModel = async (id = '') => { const records = await listModels(); if (id) return records.find(item => item.id === id); return records[0] || initialModel; };
   const storageReady = async () => {
-    const requiresCredentials = Boolean(credentials && passwordHash);
     try {
-      const [storedPasswordHash] = await Promise.all([credentials?.get(), modelStore?.verify(), guides?.verify(), history?.verify()]);
-      return !requiresCredentials || Boolean(storedPasswordHash);
+      await Promise.all([modelStore?.verify(), guides?.verify(), history?.verify()]);
+      return true;
     } catch { return false; }
   };
   const safeModel = item => ({ ...publicModel(item), id: item.id, name: item.name || '未命名 API 模块' });
@@ -116,6 +135,21 @@ export async function createApp(config, fetchModel = safeModelFetch) {
   };
   const files = new Map(await Promise.all(['index.html', 'style.css', 'app.js', 'favicon.svg'].map(async name => [name, await readFile(new URL(`./public/${name}`, import.meta.url))])));
   const sessions = new Map();
+  let credentialRead;
+  const credentialsReady = async () => {
+    if (passwordHash && credentials) {
+      const expectedHash = passwordHash;
+      credentialRead ??= credentials.get().catch(() => '').finally(() => { credentialRead = undefined; });
+      const storedHash = await credentialRead;
+      // 与发起检查时及当前的哈希比较，允许应用自身的并发密码轮换。
+      if (!storedHash || (storedHash !== expectedHash && storedHash !== passwordHash)) {
+        passwordHash = '';
+        sessions.clear();
+      }
+    }
+    return Boolean(passwordHash);
+  };
+  const requireCredentials = async () => { if (!await credentialsReady()) throw credentialsUnavailable(); };
   const attempts = new Map();
   let active = 0;
   let importActive = false;
@@ -162,6 +196,7 @@ export async function createApp(config, fetchModel = safeModelFetch) {
     res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
     if (config.secure) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
     const send = (status, data) => {
+      if (authenticated && status === 200 && !passwordHash) throw credentialsUnavailable();
       const body = Buffer.from(JSON.stringify(data));
       res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': body.length });
       res.end(req.method === 'HEAD' ? undefined : body);
@@ -197,48 +232,40 @@ export async function createApp(config, fetchModel = safeModelFetch) {
       const requestURL = new URL(req.url, config.origin);
       const path = requestURL.pathname;
       requestPath = path;
-      for (const [key, value] of sessions) if (Date.now() >= value.expires) sessions.delete(key);
-      const token = (req.headers.cookie || '').split(';').map(x => x.trim()).find(x => x.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1);
-      const session = sessions.get(token);
-      authenticated = !!session;
       if (['GET', 'HEAD'].includes(req.method) && path === '/health/live') return send(200, { status: 'ok' });
       if (['GET', 'HEAD'].includes(req.method) && path === '/health/ready') {
-        const ready = await storageReady();
+        const ready = await credentialsReady() && await storageReady() && Boolean(passwordHash);
         if (!ready) failure = 'unavailable';
         return send(ready ? 200 : 503, { status: ready ? 'ready' : 'unavailable' });
       }
       if (req.method === 'POST' && req.headers.origin !== config.origin) throw new HttpError(403, '请求来源无效，请从本站页面操作。');
+      if (path === '/api/auth/initialize') throw new HttpError(404, '接口不存在。');
+      const staticAsset = ['/style.css', '/app.js', '/favicon.svg'].includes(path);
+      if (!staticAsset) await requireCredentials();
+      for (const [key, value] of sessions) if (Date.now() >= value.expires) sessions.delete(key);
+      const token = (req.headers.cookie || '').split(';').map(x => x.trim()).find(x => x.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1);
+      const session = sessions.get(token);
+      authenticated = !!session;
       if (req.method === 'GET' && path === '/api/session') return send(200, await sessionPayload(session));
-      if (req.method === 'POST' && path === '/api/auth/initialize') {
-        if (passwordHash) throw new HttpError(409, '管理员密码已经初始化。');
-        if (!credentials) throw new HttpError(503, '管理员尚未启用持久化凭据存储。');
-        limit('initialize', 5, 60000);
-        const { password, confirmation } = await bodyJSON(req);
-        if (!validPassword(password)) throw new HttpError(400, '密码必须为 16–256 个字符。');
-        if (password !== confirmation) throw new HttpError(400, '两次输入的新密码不一致。');
-        const nextHash = await hashPassword(password);
-        await credentials.initialize(nextHash);
-        passwordHash = nextHash;
-        const nextSession = createSession(res, token);
-        return send(200, await sessionPayload(nextSession));
-      }
       if (req.method === 'POST' && path === '/api/login') {
         // 单实例全局限速，不信任客户端可伪造的 X-Forwarded-For。
         limit('login', 10, 60000);
         const { password } = await bodyJSON(req);
-        if (!passwordHash) throw new HttpError(409, '请先完成管理员密码初始化。');
         const verifiedHash = passwordHash;
-        if (!await verifyPassword(password, verifiedHash) || verifiedHash !== passwordHash) throw new HttpError(401, '密码错误，请重试。');
+        const verified = await verifyPassword(password, verifiedHash);
+        await requireCredentials();
+        if (!verified || verifiedHash !== passwordHash) throw new HttpError(401, '密码错误，请重试。');
         const nextSession = createSession(res, token);
         return send(200, await sessionPayload(nextSession));
       }
       if (path.startsWith('/api/')) {
-        if (!passwordHash) throw new HttpError(409, '请先完成管理员密码初始化。');
         if (!session) throw new HttpError(401, '登录已过期，请重新登录。');
         const assertSession = () => {
+          if (!passwordHash) throw credentialsUnavailable();
           if (sessions.get(token) !== session || session.expires <= Date.now()) throw new HttpError(401, '登录已过期，请重新登录。');
         };
-        const withSessionData = operation => serializeData(() => {
+        const withSessionData = operation => serializeData(async () => {
+          await requireCredentials();
           assertSession();
           return operation();
         });
@@ -254,6 +281,7 @@ export async function createApp(config, fetchModel = safeModelFetch) {
           const nextHash = await hashPassword(newPassword);
           await withSessionData(async () => {
             await credentials.replace(verifiedHash, nextHash);
+            if (!passwordHash) throw credentialsUnavailable();
             passwordHash = nextHash;
             sessions.clear();
           });
@@ -270,6 +298,7 @@ export async function createApp(config, fetchModel = safeModelFetch) {
             history ? await history.list() : [],
             await listModels()
           ));
+          await requireCredentials();
           assertSession();
           return send(200, payload);
         }
@@ -292,6 +321,7 @@ export async function createApp(config, fetchModel = safeModelFetch) {
             const counts = await withSessionData(async () => {
               const snapshots = Object.fromEntries(await Promise.all(input.modules.map(async name => [name, await stores[name].list()])));
               for (const name of input.modules) assertStoreCapacity(storeNames[name], snapshots[name]);
+              await requireCredentials();
               assertSession();
               const applied = [];
               try {
@@ -377,6 +407,7 @@ export async function createApp(config, fetchModel = safeModelFetch) {
           try {
             assertSession();
             const models = await discoverModels(candidate, fetchModel, controller.signal, boundedJSON);
+            await requireCredentials();
             assertSession();
             return send(200, { models });
           } catch (error) {
@@ -460,6 +491,7 @@ export async function createApp(config, fetchModel = safeModelFetch) {
             }
             const data = await boundedJSON(upstream);
             const output = modelOutput(modelConfig.protocol, data);
+            await requireCredentials();
             assertSession();
             if (testing) return send(200, { ok: true, revision: modelConfig.revision });
             return send(200, { result: output.trim(), ...(guide ? { guideId, guideName: guide.name } : {}) });
@@ -472,17 +504,13 @@ export async function createApp(config, fetchModel = safeModelFetch) {
         throw new HttpError(404, '接口不存在。');
       }
       if (!['GET', 'HEAD'].includes(req.method)) throw new HttpError(404, '页面不存在。');
-      if (path === '/') return redirect(!passwordHash ? '/setup' : session ? '/app' : '/login');
-      if (path === '/setup') {
-        if (passwordHash) return redirect(session ? '/app' : '/login');
-      } else if (path === '/login') {
-        if (!passwordHash) return redirect('/setup');
+      if (path === '/' || path === '/setup') return redirect(session ? '/app' : '/login');
+      if (path === '/login') {
         if (session) return redirect('/app');
       } else if (['/app', '/app/editor', '/app/guides', '/app/history', '/app/models', '/app/data'].includes(path)) {
-        if (!passwordHash) return redirect('/setup');
         if (!session) return redirect('/login');
-      } else if (!['/style.css', '/app.js', '/favicon.svg'].includes(path)) throw new HttpError(404, '页面不存在。');
-      const name = ['/style.css', '/app.js', '/favicon.svg'].includes(path) ? path.slice(1) : 'index.html';
+      } else if (!staticAsset) throw new HttpError(404, '页面不存在。');
+      const name = staticAsset ? path.slice(1) : 'index.html';
       const type = { 'index.html': 'text/html', 'style.css': 'text/css', 'app.js': 'text/javascript', 'favicon.svg': 'image/svg+xml' }[name];
       if (name !== 'index.html' && requestURL.searchParams.has('v')) res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
       res.writeHead(200, { 'Content-Type': `${type}; charset=utf-8`, 'Content-Length': files.get(name).length });
@@ -490,7 +518,10 @@ export async function createApp(config, fetchModel = safeModelFetch) {
     } catch (error) {
       const status = error.status || 500;
       failure = errorCategory(status);
-      if (!res.headersSent && !res.destroyed) send(status, { error: error.status ? error.message : '服务暂时不可用，请稍后重试。' });
+      if (!res.headersSent && !res.destroyed) send(status, {
+        error: error.status ? error.message : '服务暂时不可用，请稍后重试。',
+        ...(error instanceof HttpError && error.code ? { code: error.code } : {})
+      });
     }
   });
   server.requestTimeout = 15000;
@@ -502,8 +533,15 @@ export async function createApp(config, fetchModel = safeModelFetch) {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     const config = configFromEnv();
-    const server = await createApp(config);
-    server.listen(config.port, config.host, () => console.log(`提示语增强服务已启动：${config.origin}`));
-    for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => { server.close(); server.closeIdleConnections(); });
+    const command = process.argv[2];
+    if (command) {
+      if (process.argv.length !== 3 || !['--initialize', '--migrate-password-hash'].includes(command)) throw new Error('未知命令。');
+      await provisionCredentials(config, command);
+      console.log('管理员凭据已写入。');
+    } else {
+      const server = await createApp(config);
+      server.listen(config.port, config.host, () => console.log(`提示语增强服务已启动：${config.origin}`));
+      for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => { server.close(); server.closeIdleConnections(); });
+    }
   } catch (error) { console.error(`启动失败：${error.message}`); process.exitCode = 1; }
 }

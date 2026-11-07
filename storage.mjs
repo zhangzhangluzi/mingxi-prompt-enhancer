@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile, rename, unlink } from 'node:fs/promises';
+import { link, mkdir, open, readFile, writeFile, rename, unlink } from 'node:fs/promises';
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 
@@ -110,7 +110,6 @@ export const createHistory = (directory, keyHex) => createStore(directory, keyHe
 
 export async function createCredentialStore(directory, keyHex) {
   if (!directory || !/^[a-f0-9]{64}$/.test(keyHex || '')) throw new Error('凭据存储需要 DATA_DIR 和 32 字节 STORAGE_KEY。');
-  await mkdir(directory, { recursive: true, mode: 0o700 });
   const key = Buffer.from(keyHex, 'hex');
   const filename = join(directory, 'auth.enc');
   let queue = Promise.resolve();
@@ -123,7 +122,7 @@ export async function createCredentialStore(directory, keyHex) {
     if (!record || record.version !== 1 || !/^[a-f0-9]{32}:[a-f0-9]{128}$/.test(record.passwordHash || '')) throw new Error('凭据存储格式无效。');
     return record;
   }
-  async function write(passwordHash) {
+  async function write(passwordHash, initialize = false) {
     if (!/^[a-f0-9]{32}:[a-f0-9]{128}$/.test(passwordHash || '')) throw new Error('密码哈希格式无效。');
     const iv = randomBytes(12);
     const cipher = createCipheriv('aes-256-gcm', key, iv);
@@ -131,8 +130,11 @@ export async function createCredentialStore(directory, keyHex) {
     const encrypted = Buffer.concat([cipher.update(JSON.stringify(record), 'utf8'), cipher.final()]);
     const temp = `${filename}.${randomBytes(8).toString('hex')}.tmp`;
     try {
-      await writeFile(temp, Buffer.concat([iv, cipher.getAuthTag(), encrypted]), { mode: 0o600, flag: 'wx' });
-      await rename(temp, filename);
+      await writeFile(temp, Buffer.concat([iv, cipher.getAuthTag(), encrypted]), { mode: 0o600, flag: 'wx', flush: true });
+      if (initialize) await link(temp, filename);
+      else await rename(temp, filename);
+      const dir = await open(directory, 'r');
+      try { await dir.sync(); } finally { await dir.close(); }
     } finally { await unlink(temp).catch(error => { if (error.code !== 'ENOENT') throw error; }); }
   }
   function serial(operation) {
@@ -143,8 +145,11 @@ export async function createCredentialStore(directory, keyHex) {
   return {
     get: () => serial(async () => (await read())?.passwordHash || ''),
     initialize: passwordHash => serial(async () => {
-      if (await read()) throw new StoreError(409, '管理员密码已经初始化。');
-      await write(passwordHash);
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      try { await write(passwordHash, true); } catch (error) {
+        if (error.code === 'EEXIST') throw new StoreError(409, '凭据文件已存在，请先核对现有凭据。');
+        throw error;
+      }
     }),
     replace: (expected, passwordHash) => serial(async () => {
       const current = await read();

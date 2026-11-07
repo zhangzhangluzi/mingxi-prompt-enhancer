@@ -10,11 +10,30 @@ chmod 600 .env
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
-将生成的 64 位十六进制值写入 `STORAGE_KEY`。生产环境必须使用真实 HTTPS 域名，并保持 `HOST=127.0.0.1`。首次启动时保持 `PASSWORD_HASH` 为空，由 `/setup` 页面设置管理员密码。不要把服务器登录密码或模型 API 密钥写入代码仓库。
+将生成的 64 位十六进制值写入 `STORAGE_KEY`。生产环境必须使用真实 HTTPS 域名，并保持 `HOST=127.0.0.1`。新部署将 `PASSWORD_HASH` 留空。不要把服务器登录密码或模型 API 密钥写入代码仓库。
 
-## 2. systemd
+## 2. 本机初始化与 systemd
 
-创建低权限用户和数据目录，将 `.env` 放到仅 root 可读的位置，例如 `/etc/prompt-enhancer.env`，并将 `DATA_DIR` 指向仅服务用户可读写的目录。复制并按实际 Node 路径修改 [`deploy/prompt-enhancer.service`](deploy/prompt-enhancer.service)，然后执行：
+创建低权限用户和数据目录，将 `.env` 放到仅 root 可读的位置，例如 `/etc/prompt-enhancer.env`，并将 `DATA_DIR` 指向仅服务用户可读写的目录。新实例在 Bash 中通过隐藏回显的提示输入两次密码，并以服务用户初始化：
+
+```bash
+sudo -v
+(
+  IFS= read -rs -p '管理员密码：' mingxi_password || exit 1
+  printf '\n'
+  IFS= read -rs -p '确认密码：' mingxi_confirmation || exit 1
+  printf '\n'
+  printf '%s\n%s\n' "$mingxi_password" "$mingxi_confirmation" |
+    sudo systemd-run --quiet --wait --pipe --collect \
+      -p User=prompt-enhancer -p Group=prompt-enhancer -p UMask=0077 \
+      -p EnvironmentFile=/etc/prompt-enhancer.env \
+      /opt/prompt-enhancer-runtime/bin/node /opt/prompt-enhancer/server.mjs --initialize
+)
+```
+
+本机开发时可用 `npm start -- --initialize` 接收相同的两行标准输入。仅有旧版 `PASSWORD_HASH`、尚未创建 `auth.enc` 的实例，在本机以服务用户用同一环境运行 `server.mjs --migrate-password-hash`，该命令会保留原密码和业务文件。已有 `auth.enc` 的实例直接升级。凭据故障时恢复原 `auth.enc` 后重启服务。
+
+复制并按实际 Node 路径修改 [`deploy/prompt-enhancer.service`](deploy/prompt-enhancer.service)，然后执行：
 
 ```sh
 sudo systemctl daemon-reload
@@ -45,7 +64,7 @@ sudo systemctl reload caddy
 
 依次确认：
 
-1. 未初始化时访问任意业务路径会进入 `/setup`。
+1. 未初始化或凭据损坏时，访问登录及业务路径返回 503，健康存活接口仍可访问。首次设置只能通过本机命令完成。
 2. 初始化后未登录访问 `/app/*` 会进入 `/login`，业务 API 返回 401。
 3. 登录后可读取指引、收藏和模型模块；模型配置保存后再进行固定短句连接测试。
 4. 修改密码后旧密码失效，新密码可登录；退出后原会话失效。
@@ -56,7 +75,7 @@ sudo systemctl reload caddy
 
 ## 数据与回退
 
-`auth.enc`、`guides.enc`、`history.enc` 和 `model.enc` 位于 `DATA_DIR`，均使用 `STORAGE_KEY` 加密。升级前保存代码版本和数据文件校验值；回退时只替换经过验证的代码版本，不覆盖环境文件和数据目录。更换 `STORAGE_KEY` 会使既有数据无法解密。
+`auth.enc`、`guides.enc`、`history.enc` 和 `model.enc` 位于 `DATA_DIR`，均使用 `STORAGE_KEY` 加密。升级前核对代码版本和数据文件校验值。回退到 2.2.7 或更早的版本时，应先在公网入口禁用 `/api/auth/initialize` 并验证原 `auth.enc` 可读，再切换代码。恢复需要与加密文件配套的原 `STORAGE_KEY`。
 
 ## 运行边界
 

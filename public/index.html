@@ -4,21 +4,11 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light"><meta name="theme-color" content="#146b51"><title>明晰 · 提示语工作台</title>
   <link rel="icon" href="/favicon.svg?v=2.2.6" type="image/svg+xml" sizes="any">
-  <link rel="stylesheet" href="/style.css?v=2.2.6"><script src="/app.js?v=2.2.6" type="module"></script>
+  <link rel="stylesheet" href="/style.css?v=2.2.6"><script src="/app.js?v=2.2.8" type="module"></script>
 </head>
 <body>
   <header><a class="brand" href="/" aria-label="明晰首页"><span class="brand-mark" aria-hidden="true">明</span>明晰 <span class="brand-sub">提示语工作台</span></a><div class="header-right"><span class="private">私人工作空间</span><button id="change-password" class="text-button" hidden>修改密码</button><button id="logout" class="text-button" hidden>退出登录</button></div></header>
   <main>
-    <section id="setup-view" class="login-card" hidden>
-      <span class="eyebrow">首次初始化</span><h1>设置管理员密码</h1>
-      <p class="muted">完成设置后才能进入工作台。密码需为 16–256 个字符。</p>
-      <form id="setup-form">
-        <label for="setup-password">管理员密码</label><input id="setup-password" type="password" autocomplete="new-password" required minlength="16" maxlength="256" placeholder="请输入管理员密码">
-        <label for="setup-confirmation">确认密码</label><input id="setup-confirmation" type="password" autocomplete="new-password" required minlength="16" maxlength="256" placeholder="请再次输入管理员密码">
-        <button id="setup-button" class="primary" type="submit">完成初始化 <span aria-hidden="true">→</span></button>
-      </form>
-      <p id="setup-error" class="error" role="alert"></p>
-    </section>
     <section id="login-view" class="login-card" hidden>
       <span class="eyebrow">PRIVATE WORKSPACE</span><h1>让想法，<br>表达得更清楚。</h1>
       <p class="muted">输入访问密码，进入你的提示语工作台。</p>

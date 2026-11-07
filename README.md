@@ -32,8 +32,8 @@
 cp .env.example .env
 chmod 600 .env
 # 本机开发设置 PUBLIC_ORIGIN=http://127.0.0.1:3080、ALLOW_INSECURE_LOCAL=true
+# 先按 DEPLOYMENT.md 在本机初始化管理员凭据，再启动服务。
 npm start
-# 首次打开站点，在初始化页面设置管理员密码。
 npm test
 ```
 
@@ -56,11 +56,11 @@ npm test
 1. 将本目录上传至 `/opt/prompt-enhancer`；使用服务器已有发布机制时接入该机制，不重复创建备份或构建缓存。
 2. 安装或复用 Node.js 22+，核实其路径并修正 `deploy/prompt-enhancer.service` 的 `ExecStart`。
 3. 创建无登录权限的 `prompt-enhancer` 系统用户。将 `.env.example` 复制到 `/etc/prompt-enhancer.env`，设置权限 `600`、属主 root；systemd 会读取后传给服务。
-4. 配置 `DATA_DIR=/var/lib/prompt-enhancer` 与随机生成的 64 位十六进制 `STORAGE_KEY`，用于加密保存管理员凭据及业务数据。新部署将 `PASSWORD_HASH` 留空；服务启动后首次访问会强制进入初始化页。不要使用 SSH 密码作为网站密码。密钥不可随意更换，否则凭据及原记录无法解密。
+4. 配置 `DATA_DIR=/var/lib/prompt-enhancer` 与随机生成的 64 位十六进制 `STORAGE_KEY`，用于加密保存管理员凭据及业务数据。新部署将 `PASSWORD_HASH` 留空，按 [自托管部署](DEPLOYMENT.md#2-本机初始化与-systemd) 初始化凭据。密钥需与既有加密文件配套使用。
 5. 设置真实 HTTPS `PUBLIC_ORIGIN`、模型 API 基础地址、密钥和模型名称。支持 Chat Completions、Responses、Claude Messages、Gemini Generate Content；程序不自动重试计费请求。模型配置留空时仍可使用指引、收藏及模型配置功能，增强返回明确的未配置错误。
 6. 安装 systemd 单元，执行 `systemctl daemon-reload`、`systemctl enable --now prompt-enhancer`。
 7. 将示例站点加入现有 Caddy 配置，先 `caddy validate --config /etc/caddy/Caddyfile`，通过后再 reload。安全响应头由应用统一输出，当前站点不要再叠加同类 Caddy header 片段。DNS 须指向服务器，开放 80/443；3080 只监听回环地址。
-8. 首次通过 HTTPS 打开站点并设置管理员密码；验证未登录控制台直链跳转登录页、未登录接口返回 401、登录后实际增强成功、修改密码后旧密码失效，以及注销后原会话失效。服务重启会使所有会话失效。
+8. 通过 HTTPS 用已初始化的密码登录；验证未登录控制台直链跳转登录页、未登录接口返回 401、登录后实际增强成功、修改密码后旧密码失效，以及注销后原会话失效。服务重启会使所有会话失效。
 
 不启用 Caddy 请求正文日志；不要开启会记录请求体的调试中间件。单密码版本用于个人或可信小组共享，所有持有密码的人拥有同等权限；不提供多用户数据隔离。全局登录限制每分钟 10 次；单会话增强每分钟 20 次；最多 4 个并发模型请求。
 
@@ -79,7 +79,7 @@ npm test
 
 ## 管理与持久化
 
-`auth.enc`、`guides.enc`、`history.enc` 与 `model.enc` 保存在 `DATA_DIR`。`auth.enc` 只保存 scrypt 加盐哈希的加密记录，不保存明文密码。沿用已有密钥即可直接读取旧版业务数据；旧部署首次升级会把已有 `PASSWORD_HASH` 一次性迁入 `auth.enc`，验证成功后可清空环境变量。未保存的编辑只在当前页面保留，保存成功后刷新或服务重启可回读。所有使用同一访问密码的人共享这些记录。
+`auth.enc`、`guides.enc`、`history.enc` 与 `model.enc` 保存在 `DATA_DIR`。`auth.enc` 只保存 scrypt 加盐哈希的加密记录。沿用已有密钥即可直接读取旧版业务数据；仅使用 `PASSWORD_HASH` 的旧部署需在本机显式迁移一次，验证成功后可清空环境变量。保存成功后刷新或服务重启可回读。所有使用同一访问密码的人共享这些记录。
 
 删除需要界面确认，删除后不可恢复。记录数上限为每类 100 条。程序以单实例运行，串行原子写入避免丢失并发操作；多进程或多副本部署需先更换支持跨进程事务的存储方案。
 
@@ -155,9 +155,9 @@ npm test
 
 指引管理、已收藏和模型配置均可在列表与自适应宫格之间切换。三个模块分别使用浏览器原生 `localStorage` 保存最近选择，不改动服务器数据、搜索筛选或原有操作流程。
 
-## Web 认证框架（2.0.0）
+## Web 认证框架
 
-- 未初始化时，`/`、`/login` 和全部 `/app/*` 路径统一跳转 `/setup`；完成初始化前，业务 API 返回 409，不能进入工作台。
+- 未初始化、凭据文件缺失或损坏时，登录和业务访问返回 503。首次初始化由运维在服务器本机执行，旧 `/setup` 地址在服务可用时跳转至登录页或工作台。
 - 初始化完成后，未登录访问 `/app`、`/app/editor`、`/app/guides`、`/app/history`、`/app/models` 或 `/app/data` 均跳转 `/login`；业务 API 继续返回 401。静态 CSS/JS 与最小健康检查保持公开，不包含用户数据或密钥。
 - 浏览器只通过 HTTPS 提交密码，不在本地存储密码。服务端使用随机盐和 scrypt 生成哈希，再用现有 `STORAGE_KEY` 加密写入 `auth.enc`；请求正文和凭据不写日志。
 - 顶部“修改密码”要求当前密码、新密码和确认密码。成功后原密码失效，并立即注销全部已有会话，必须用新密码重新登录。

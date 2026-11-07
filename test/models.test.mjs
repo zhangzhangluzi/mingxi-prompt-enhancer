@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { modelRequest, modelOutput, validateBase, publicIP, safeModelFetch } from '../models.mjs';
 import { createApp } from '../server.mjs';
+import { createCredentialStore } from '../storage.mjs';
 const outputs = {
   chat: { choices: [{ finish_reason: 'stop', message: { content: '  完整正文  ', reasoning_content: '不显示' } }] },
   responses: { status: 'completed', output: [{ type: 'reasoning', summary: [] }, { type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: '完整正文' }] }] },
@@ -40,6 +41,7 @@ test('配置鉴权、密钥不回传、加密落盘及重启、版本冲突、�
   t.after(() => rm(dir, { recursive: true, force: true }));
   const salt = 'b'.repeat(32), password = 'test-model-password';
   const config = { origin: 'https://test.example', secure: true, passwordHash: `${salt}:${scryptSync(password, salt, 64).toString('hex')}`, timeoutMs: 500, dataDir: dir, storageKey: randomBytes(32).toString('hex'), log: () => {} };
+  await (await createCredentialStore(dir, config.storageKey)).initialize(config.passwordHash);
   let expectedProtocol = 'chat', calls = 0;
   const upstream = async (url, opts) => {
     calls++;

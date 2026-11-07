@@ -23,7 +23,6 @@ let undoStack = [];
 let source = '';
 let applied = false;
 let authenticated = false;
-let initialized = true;
 let historyEnabled = false;
 let saving = false;
 let epoch = 0;
@@ -63,7 +62,9 @@ async function api(path, data, signal) {
   const json = await response.json();
   if (generation !== epoch) throw new Error('会话已改变，请重试。');
   if (!response.ok) {
-    if (response.status === 401 && !['/api/login', '/api/password'].includes(path)) lock(true);
+    if (response.status === 503 && json.code === 'credentials_unavailable') {
+      lock(); $('login-error').textContent = json.error;
+    } else if (response.status === 401 && !['/api/login', '/api/password'].includes(path)) lock();
     throw new Error(json.error || '请求失败，请稍后重试。');
   }
   return json;
@@ -95,8 +96,8 @@ function update() {
   $('result-card').setAttribute('aria-busy', String(busy));
   $('enhance').textContent = busy ? '正在增强…' : '增强提示语 ↗';
 }
-function lock(isInitialized = true, updatePath = true) {
-  authenticated = false; initialized = isInitialized; epoch++;
+function lock(updatePath = true) {
+  authenticated = false; epoch++;
   modelConfig = null; modelProviders = []; modelCatalog = []; modelModules = []; selectedModuleId = readPreference(preferenceKeys.module); modelSnapshot = ''; modelTransitioning = false; renderModelCatalog(); renderModuleSelectors(); $('model-form').reset(); $('model-provider').replaceChildren(); $('model-key-status').textContent = ''; $('model-feedback').textContent = ''; $('model-fields').disabled = true; $('model-editor').hidden = true;
   settleConfirmation(false);
   for (const id of ['guide-dialog', 'history-dialog', 'password-dialog', 'export-dialog']) $(id).close();
@@ -107,7 +108,7 @@ function lock(isInitialized = true, updatePath = true) {
   $('result-title').value = ''; $('result-title-wrap').hidden = true;
   request?.abort();
   clearTimeout(expiresTimer);
-  $('prompt').value = ''; $('result').value = ''; $('password').value = ''; $('setup-form').reset();
+  $('prompt').value = ''; $('result').value = ''; $('password').value = '';
   transferPayload = null; exportBusy = false; importBusy = false;
   clearTimeout(exportStatusTimer); clearTimeout(importStatusTimer);
   $('export-json').value = ''; $('export-result').hidden = true; $('export-locked').hidden = false; $('import-json').value = ''; $('export-status').textContent = ''; $('import-status').textContent = '';
@@ -118,36 +119,25 @@ function lock(isInitialized = true, updatePath = true) {
 
   clearStatus(); showError();
   $('workspace').hidden = true; $('logout').hidden = true; $('change-password').hidden = true;
-  $('login-view').hidden = !isInitialized; $('setup-view').hidden = isInitialized;
-  if (updatePath) history.replaceState(null, '', isInitialized ? '/login' : '/setup');
+  $('login-view').hidden = false;
+  if (updatePath) history.replaceState(null, '', '/login');
   update();
 }
 function unlock(session) {
-  authenticated = true; initialized = true; epoch++;
+  authenticated = true; epoch++;
   maxInput = session.maxInput;
   historyEnabled = session.historyEnabled;
   $('save').hidden = !historyEnabled; $('new-guide').disabled = !historyEnabled;
-  $('password').value = ''; $('login-error').textContent = ''; $('setup-error').textContent = '';
-  $('login-view').hidden = true; $('setup-view').hidden = true; $('workspace').hidden = false; $('logout').hidden = false; $('change-password').hidden = false;
+  $('password').value = ''; $('login-error').textContent = '';
+  $('login-view').hidden = true; $('workspace').hidden = false; $('logout').hidden = false; $('change-password').hidden = false;
   const panel = panelFromPath();
   if (!location.pathname.startsWith('/app')) history.replaceState(null, '', panelPaths[panel]);
   clearTimeout(expiresTimer);
-  expiresTimer = setTimeout(() => { lock(true); $('login-error').textContent = '会话已过期，页面内容已清除，请重新登录。'; }, Math.max(0, session.expiresAt - Date.now()));
+  expiresTimer = setTimeout(() => { lock(); $('login-error').textContent = '会话已过期，页面内容已清除，请重新登录。'; }, Math.max(0, session.expiresAt - Date.now()));
   update(); $('prompt').focus();
   $('model-notice').hidden = session.modelReady;
   showPanel(panel, false); if (panel !== 'guides') loadGuides(); loadModuleSelectors();
 }
-$('setup-form').addEventListener('submit', async event => {
-  event.preventDefault();
-  const password = $('setup-password').value, confirmation = $('setup-confirmation').value;
-  $('setup-error').textContent = '';
-  if ([...password].length < 16 || [...password].length > 256) { $('setup-error').textContent = '密码必须为 16–256 个字符。'; return; }
-  if (password !== confirmation) { $('setup-error').textContent = '两次输入的密码不一致。'; return; }
-  $('setup-button').disabled = true; $('setup-button').textContent = '正在初始化…';
-  try { unlock(await api('/api/auth/initialize', { password, confirmation }, AbortSignal.timeout(20000))); }
-  catch (error) { $('setup-error').textContent = error.name === 'TimeoutError' ? '初始化超时，请重试。' : error.message; }
-  finally { $('setup-button').disabled = false; $('setup-button').textContent = '完成初始化 →'; }
-});
 $('login-form').addEventListener('submit', async event => {
   event.preventDefault(); $('login-button').disabled = true; $('login-button').textContent = '正在验证…'; $('login-error').textContent = '';
   try { unlock(await api('/api/login', { password: $('password').value }, AbortSignal.timeout(15000))); }
@@ -156,7 +146,7 @@ $('login-form').addEventListener('submit', async event => {
 });
 $('logout').addEventListener('click', async () => {
   $('logout').disabled = true;
-  try { await api('/api/logout', {}, AbortSignal.timeout(15000)); lock(true); $('password').focus(); }
+  try { await api('/api/logout', {}, AbortSignal.timeout(15000)); lock(); $('password').focus(); }
   catch { showError('退出失败，请检查网络后重试。'); }
   finally { $('logout').disabled = false; }
 });
@@ -172,7 +162,7 @@ $('password-form').addEventListener('submit', async event => {
   $('password-submit').disabled = true; $('password-submit').textContent = '正在更新…';
   try {
     await api('/api/password', { currentPassword, newPassword, confirmation }, AbortSignal.timeout(20000));
-    $('password-dialog').close(); lock(true); $('login-error').textContent = '密码已更新，请使用新密码重新登录。'; $('password').focus();
+    $('password-dialog').close(); lock(); $('login-error').textContent = '密码已更新，请使用新密码重新登录。'; $('password').focus();
   } catch (error) { if (authenticated) $('password-error').textContent = error.name === 'TimeoutError' ? '更新超时，请重试。' : error.message; }
   finally { $('password-submit').disabled = false; $('password-submit').textContent = '更新密码'; }
 });
@@ -655,8 +645,8 @@ $('model-test').addEventListener('click', async () => {
   finally { modelBusy = false; $('model-fields').disabled = !authenticated; $('refresh-model').disabled = false; }
 });
 // 后退缓存恢复时重新验证，不恢复上一会话的敏感文本。
-window.addEventListener('pagehide', () => lock(initialized, false));
+window.addEventListener('pagehide', () => lock(false));
 window.addEventListener('pageshow', event => { if (event.persisted) location.reload(); });
-try { const session = await api('/api/session', undefined, AbortSignal.timeout(15000)); if (session.authenticated) unlock(session); else lock(session.initialized, false); }
-catch { lock(true, false); $('login-error').textContent = '无法连接服务器，请检查网络后重试。'; }
+try { const session = await api('/api/session', undefined, AbortSignal.timeout(15000)); if (session.authenticated) unlock(session); else lock(false); }
+catch { lock(false); $('login-error').textContent ||= '无法连接服务器，请检查网络后重试。'; }
 finally { $('initial-status').hidden = true; }

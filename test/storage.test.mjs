@@ -10,8 +10,9 @@ test('管理员凭据加密保存、只初始化一次并支持原子替换', as
   t.after(() => rm(dir, { recursive: true, force: true }));
   const key = '7'.repeat(64), firstHash = `${'a'.repeat(32)}:${'b'.repeat(128)}`, nextHash = `${'c'.repeat(32)}:${'d'.repeat(128)}`;
   const store = await createCredentialStore(dir, key);
+  const other = await createCredentialStore(dir, key);
   assert.equal(await store.get(), '');
-  const attempts = await Promise.allSettled([store.initialize(firstHash), store.initialize(nextHash)]);
+  const attempts = await Promise.allSettled([store.initialize(firstHash), other.initialize(nextHash)]);
   assert.equal(attempts.filter(result => result.status === 'fulfilled').length, 1);
   const current = await store.get();
   assert.ok([firstHash, nextHash].includes(current));
