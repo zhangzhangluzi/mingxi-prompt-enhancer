@@ -1,7 +1,10 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import { lstat, mkdir, open, readdir, readFile, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { assertStoreCapacity, StoreError } from './storage.mjs';
+import { createTransfer } from './transfer.mjs';
 
 const kinds = ['auth', 'guides', 'history', 'model'];
 const manifestName = 'state.enc';
@@ -53,6 +56,34 @@ async function durableWrite(path, bytes) {
   const handle = await open(path, 'wx', 0o600);
   try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
 }
+async function writeEncryptedValue(path, value, key) {
+  if (!Array.isArray(value)) {
+    const bytes = encrypt(value, key);
+    await durableWrite(path, bytes);
+    return digest(bytes);
+  }
+  const header = Buffer.alloc(28);
+  const iv = randomBytes(12);
+  iv.copy(header);
+  const cipher = createCipheriv('aes-256-gcm', key, iv);
+  const handle = await open(path, 'wx', 0o600);
+  try {
+    await handle.writeFile(header);
+    await handle.writeFile(cipher.update('['));
+    for (const [index, record] of value.entries()) {
+      await handle.writeFile(cipher.update((index ? ',' : '') + JSON.stringify(record), 'utf8'));
+    }
+    await handle.writeFile(cipher.update(']'));
+    await handle.writeFile(cipher.final());
+    const tag = cipher.getAuthTag();
+    const { bytesWritten } = await handle.write(tag, 0, tag.length, iv.length);
+    if (bytesWritten !== tag.length) throw unavailable();
+    await handle.sync();
+  } finally { await handle.close(); }
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  return hash.digest('hex');
+}
 async function publishManifest(directory, manifest, key, beforeCommit = async () => {}) {
   const temp = join(directory, 'state-' + randomBytes(16).toString('hex') + '.tmp');
   try {
@@ -65,16 +96,16 @@ async function publishManifest(directory, manifest, key, beforeCommit = async ()
     await unlink(temp).catch(() => {});
   }
 }
-function entry(name, bytes) {
-  return { file: name, digest: digest(bytes), generation: randomUUID() };
+function entry(file, digest) {
+  return { file, digest, generation: randomUUID() };
 }
 async function collectLegacy(directory, key) {
   const entries = {};
   for (const kind of kinds) {
     const file = legacyFile(kind);
-    const { bytes } = await readStateFile(directory, file);
+    const { bytes, digest } = await readStateFile(directory, file);
     checkValue(kind, decrypt(bytes, key));
-    entries[kind] = entry(file, bytes);
+    entries[kind] = entry(file, digest);
   }
   return entries;
 }
@@ -94,10 +125,8 @@ export async function provisionState(directory, keyHex, initial) {
   if (initial) {
     for (const kind of kinds) {
       checkValue(kind, initial[kind]);
-      const bytes = encrypt(initial[kind], key);
       const file = kind + '-' + randomBytes(16).toString('hex') + '.enc';
-      await durableWrite(join(directory, file), bytes);
-      entries[kind] = entry(file, bytes);
+      entries[kind] = entry(file, await writeEncryptedValue(join(directory, file), initial[kind], key));
     }
   }
   await publishManifest(directory, { version: 1, entries, receipts: [] }, key);
@@ -148,14 +177,12 @@ export async function openState(directory, keyHex) {
       try {
         for (const [kind, value] of Object.entries(changes)) {
           checkValue(kind, value);
-          const bytes = encrypt(value, key);
           const file = kind + '-' + randomBytes(16).toString('hex') + '.enc';
-          const info = entry(file, bytes);
+          staged.set(file, {});
+          const info = entry(file, await writeEncryptedValue(join(directory, file), value, key));
           if (!receipt) info.generation = entries[kind].generation;
           entries[kind] = info;
-          staged.set(file, { digest: info.digest });
-          await durableWrite(join(directory, file), bytes);
-          staged.get(file).signature = signature(await lstat(join(directory, file), { bigint: true }));
+          staged.set(file, { digest: info.digest, signature: signature(await lstat(join(directory, file), { bigint: true })) });
         }
         const next = { version: 1, entries, receipts: receipt ? [receipt, ...manifest.receipts].slice(0, 32) : manifest.receipts };
         await publishManifest(directory, next, key, async () => {
@@ -187,6 +214,13 @@ export async function openState(directory, keyHex) {
   }
   return {
     read: kind => structuredClone(values[kind]),
+    readRecord(kind, id) {
+      const records = values[kind];
+      const record = id ? records.find(item => item.id === id) : records[0];
+      return record ? structuredClone(record) : undefined;
+    },
+    exportData: () => createTransfer(values.guides, values.history, values.model),
+    matches: (kind, records) => isDeepStrictEqual(values[kind], records),
     generation: kind => manifest.entries[kind].generation,
     receipt: id => manifest.receipts.find(item => item.id === id),
     commit,

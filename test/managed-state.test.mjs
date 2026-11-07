@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
-import { randomBytes, randomUUID, scryptSync } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, scryptSync } from 'node:crypto';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
 import { mkdtemp, rename, rm, readdir } from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -96,11 +98,17 @@ test('导入只提交一次并拒绝旧页面写入，同一导入回执跨重�
   } };
   const request = { importId: randomUUID(), generations, modules: ['favorites', 'models'], payload };
   assert.equal((await service.api('/api/data/import', request)).status, 200);
+  const legacyFingerprint = createHash('sha256').update(JSON.stringify([request.modules, request.payload])).digest('hex');
+  assert.equal((await openState(config.dataDir, config.storageKey)).receipt(request.importId).fingerprint, legacyFingerprint);
+  const importedGenerations = (await service.api('/api/data/import')).data.generations;
+  const currentBeforeRepeat = (await service.api('/api/history')).data.records[0];
+  const repeated = { ...request, importId: randomUUID(), generations: importedGenerations };
+  assert.equal((await service.api('/api/data/import', repeated)).status, 200);
+  assert.deepEqual((await service.api('/api/data/import')).data.generations, importedGenerations);
   assert.equal((await service.api('/api/history/update', { ...staleHistory, result: '旧页面覆盖' })).status, 409);
   assert.equal((await service.api('/api/models/delete', { id: staleModel.id, revision: staleModel.revision, generation: staleModel.generation })).status, 409);
-  const current = (await service.api('/api/history')).data.records[0];
-  assert.equal(current.result, '导入结果');
-  assert.equal((await service.api('/api/history/update', { ...current, result: '正常新编辑' })).status, 200);
+  assert.equal(currentBeforeRepeat.result, '导入结果');
+  assert.equal((await service.api('/api/history/update', { ...currentBeforeRepeat, result: '正常新编辑' })).status, 200);
   await service.close();
 
   service = await listen(t, config);
@@ -138,7 +146,7 @@ test('导入提交前后进程中断，重启按清单选择完整数据', { tim
       "fs.promises.rename = async (from, to) => {",
       "  if (!to.endsWith('/state.enc')) return original(from, to);",
       "  if (args.boundary === 'after') await original(from, to);",
-      "  process.send('cut'); await new Promise(() => {});",
+      "  process.send('cut'); await new Promise(() => setInterval(() => {}, 1000));",
       "}; syncBuiltinESMExports();",
       "const { openState } = await import(args.module);",
       "const state = await openState(args.dataDir, args.storageKey); await state.commit(args.changes, args.receipt);"
@@ -162,6 +170,38 @@ test('导入提交前后进程中断，重启按清单选择完整数据', { tim
     assert.equal(!!reopened.receipt(receipt.id), boundary === 'after');
     await reopened.cleanStaged();
     await reopened.verify();
+  }
+});
+
+test('磁盘满不提交部分数据，切换后同步失败时先核对已生效的清单', async t => {
+  for (const failure of ['ENOSPC', 'EIO']) {
+    const config = await setup(t);
+    const state = await provisionState(config.dataDir, config.storageKey, initial);
+    const changes = { history: [{ ...history, result: '新结果' }], guides: [{ ...guide, name: '新指引' }] };
+    const receipt = { id: randomUUID(), fingerprint: 'fixture', counts: { favorites: 1, guides: 1 } };
+    const open = fs.promises.open, rename = fs.promises.rename;
+    let published = false;
+    const error = Object.assign(new Error('fixture disk error'), { code: failure });
+    t.mock.method(fs.promises, 'open', async (path, ...args) => {
+      if (failure === 'ENOSPC' && /\/guides-[a-f0-9]{32}\.enc$/.test(path)) throw error;
+      const handle = await open(path, ...args);
+      if (failure === 'EIO' && published && path === config.dataDir) handle.sync = async () => { throw error; };
+      return handle;
+    });
+    t.mock.method(fs.promises, 'rename', async (from, to) => {
+      await rename(from, to);
+      if (to === join(config.dataDir, 'state.enc')) published = true;
+    });
+    syncBuiltinESMExports();
+    try { await assert.rejects(state.commit(changes, receipt), { status: 503 }); }
+    finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+    if (failure === 'EIO') await assert.rejects(state.check(), { status: 503 });
+    else await state.check();
+    const reopened = await openState(config.dataDir, config.storageKey);
+    const expected = failure === 'EIO' ? changes : initial;
+    assert.deepEqual(reopened.read('history'), expected.history);
+    assert.deepEqual(reopened.read('guides'), expected.guides);
+    assert.equal(!!reopened.receipt(receipt.id), failure === 'EIO');
   }
 });
 

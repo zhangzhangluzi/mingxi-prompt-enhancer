@@ -16,7 +16,12 @@ function text(record, key, label, max, required = true) {
   const value = record[key] ?? (required ? null : '');
   if (typeof value !== 'string') fail(`${label}必须是文本。`);
   if (required && !value.trim()) fail(`${label}不能为空。`);
-  if ([...value].length > max) fail(`${label}不能超过 ${max} 个字符。`);
+  if (value.length > max) {
+    let count = 0;
+    for (const character of value) {
+      if (++count > max) fail(`${label}不能超过 ${max} 个字符。`);
+    }
+  }
   return value;
 }
 

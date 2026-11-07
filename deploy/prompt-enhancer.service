@@ -9,6 +9,7 @@ User=prompt-enhancer
 Group=prompt-enhancer
 WorkingDirectory=/opt/prompt-enhancer
 EnvironmentFile=/etc/prompt-enhancer.env
+Environment=MALLOC_MMAP_THRESHOLD_=131072
 ExecStart=/opt/prompt-enhancer-runtime/bin/node /opt/prompt-enhancer/server.mjs
 Restart=on-failure
 RestartSec=5

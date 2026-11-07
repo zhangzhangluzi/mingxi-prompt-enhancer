@@ -81,6 +81,8 @@ sudo systemctl reload caddy
 
 `state.enc` 是当前数据的提交点。故障时先停写，恢复清单及其引用的准确加密文件，用 `--check-state` 验证后重新启动。初始化与迁移命令应在服务停止时执行。开放新版写入前可切回原代码及原格式，接收新写入后按当前清单恢复，降级前须离线验证数据转换。
 
+在使用 glibc 的 Linux 上，systemd 示例设置 `MALLOC_MMAP_THRESHOLD_=131072`，让较大的分配在释放后可以及时归还系统。沿用已有单元的部署可以只给本服务添加该环境变量，凭据和模型配置继续从原环境文件读取。
+
 `TRUST_PROXY_CLIENT=true` 仅用于回环反代已覆盖 `X-Workbench-Client` 并已校验上游来源的部署。直接运行或普通反代保持默认 false。生成和导入继续使用原有 JSON 格式。
 
 ## 运行边界

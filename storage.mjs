@@ -12,13 +12,19 @@ export const STORE_BYTE_LIMITS = Object.freeze({
   model: 5 * 1024 * 1024
 });
 const STORE_LABELS = { guides: '指引', history: '已收藏', model: '模型配置' };
-export function assertStoreCapacity(name, records) {
-  const json = JSON.stringify(records);
+function assertEncodedCapacity(name, bytes) {
   const limit = STORE_BYTE_LIMITS[name];
-  if (limit && Buffer.byteLength(json, 'utf8') > limit) {
+  if (limit && bytes > limit) {
     throw new StoreError(413, `${STORE_LABELS[name]}数据超过存储上限，请删除不再需要的内容后重试。`);
   }
-  return json;
+}
+export function assertStoreCapacity(name, records) {
+  let bytes = 2;
+  for (const [index, record] of records.entries()) {
+    bytes += Buffer.byteLength(JSON.stringify(record) ?? 'null') + (index ? 1 : 0);
+    assertEncodedCapacity(name, bytes);
+  }
+  return bytes;
 }
 // 兼容旧的 history.enc 数组格式。串行读改写 + revision 防止并发覆盖。
 export async function createStore(directory, keyHex, name, defaults = [], managed) {
@@ -47,7 +53,8 @@ export async function createStore(directory, keyHex, name, defaults = [], manage
   }
   async function write(records, beforeCommit) {
     if (managed) return managed.commit({ [name]: records }, undefined, beforeCommit);
-    const json = assertStoreCapacity(name, records);
+    const json = JSON.stringify(records);
+    assertEncodedCapacity(name, Buffer.byteLength(json));
     const iv = randomBytes(12);
     const cipher = createCipheriv('aes-256-gcm', key, iv);
     const encrypted = Buffer.concat([cipher.update(json, 'utf8'), cipher.final()]);
