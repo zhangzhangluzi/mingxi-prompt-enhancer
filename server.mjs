@@ -19,6 +19,11 @@ class HttpError extends Error {
   constructor(status, message, code) { super(message); this.status = status; this.code = code; }
 }
 const credentialsUnavailable = () => new HttpError(503, '管理员凭据不可用，请联系管理员。', 'credentials_unavailable');
+function passwordRateLimit(message, retryAfter) {
+  const error = new HttpError(429, message);
+  error.retryAfter = retryAfter;
+  return error;
+}
 function validPassword(password) { return typeof password === 'string' && [...password].length >= 16 && [...password].length <= 256; }
 async function hashPassword(password) {
   const salt = randomBytes(16).toString('hex');
@@ -208,7 +213,7 @@ export async function createApp(config, fetchModel = safeModelFetch) {
   };
   const attempts = new Map();
   const loginAttempts = new Map();
-  let passwordChecks = 0;
+  let passwordWorkInFlight = 0;
   function limitLogin(req) {
     const peer = req.socket.remoteAddress || '';
     const header = req.headers['x-workbench-client'];
@@ -223,13 +228,14 @@ export async function createApp(config, fetchModel = safeModelFetch) {
       entry = { until: now + 60000, count: 0 };
       loginAttempts.set(key, entry);
     }
-    if (++entry.count > 10) throw new HttpError(429, '登录尝试过多，请稍后重试。');
+    if (entry.count >= 10) throw passwordRateLimit('登录尝试过多，请稍后重试。', Math.ceil((entry.until - now) / 1000));
+    entry.count++;
     return key;
   }
-  async function checkPassword(password, hash) {
-    if (passwordChecks >= 2) throw new HttpError(429, '密码验证繁忙，请稍后重试。');
-    passwordChecks++;
-    try { return await verifyPassword(password, hash); } finally { passwordChecks--; }
+  async function runPasswordWork(operation) {
+    if (passwordWorkInFlight >= 2) throw passwordRateLimit('密码验证繁忙，请稍后重试。', 1);
+    passwordWorkInFlight++;
+    try { return await operation(); } finally { passwordWorkInFlight--; }
   }
   let active = 0;
   let importActive = false;
@@ -330,9 +336,12 @@ export async function createApp(config, fetchModel = safeModelFetch) {
       if (req.method === 'POST' && path === '/api/login') {
         if (!config.managed) limit('login', 10, 60000);
         const { password } = await bodyJSON(req, 4096);
-        const source = config.managed && validPassword(password) ? limitLogin(req) : undefined;
+        let source;
         const verifiedHash = passwordHash;
-        const verified = validPassword(password) && await checkPassword(password, verifiedHash);
+        const verified = validPassword(password) && await runPasswordWork(() => {
+          if (config.managed) source = limitLogin(req);
+          return verifyPassword(password, verifiedHash);
+        });
         await requireCredentials();
         if (!verified || verifiedHash !== passwordHash) throw new HttpError(401, '密码错误，请重试。');
         if (source !== undefined) loginAttempts.delete(source);
@@ -355,11 +364,11 @@ export async function createApp(config, fetchModel = safeModelFetch) {
           limit(`password:${token}`, 5, 60000);
           const { currentPassword, newPassword, confirmation } = await bodyJSON(req);
           const verifiedHash = passwordHash;
-          if (!await checkPassword(currentPassword, verifiedHash)) throw new HttpError(401, '当前密码错误。');
+          if (!await runPasswordWork(() => verifyPassword(currentPassword, verifiedHash))) throw new HttpError(401, '当前密码错误。');
           if (!validPassword(newPassword)) throw new HttpError(400, '新密码必须为 16–256 个字符。');
           if (newPassword !== confirmation) throw new HttpError(400, '两次输入的新密码不一致。');
           if (newPassword === currentPassword) throw new HttpError(409, '新密码不能与当前密码相同。');
-          const nextHash = await hashPassword(newPassword);
+          const nextHash = await runPasswordWork(() => hashPassword(newPassword));
           await withSessionData(async () => {
             await credentials.replace(verifiedHash, nextHash, assertSession);
             if (!passwordHash) throw credentialsUnavailable();
@@ -373,7 +382,7 @@ export async function createApp(config, fetchModel = safeModelFetch) {
           if (req.method !== 'POST') throw new HttpError(405, '请求方法不支持。');
           limit(`export:${token}`, 5, 60000);
           const { password } = await bodyJSON(req, 2048);
-          if (!await checkPassword(password, passwordHash)) throw new HttpError(403, '当前密码错误。');
+          if (!await runPasswordWork(() => verifyPassword(password, passwordHash))) throw new HttpError(403, '当前密码错误。');
           const payload = await withSessionData(async () => state ? state.exportData() : createTransfer(
             guides ? await guides.list() : DEFAULT_GUIDES,
             history ? await history.list() : [],
@@ -663,6 +672,7 @@ export async function createApp(config, fetchModel = safeModelFetch) {
     } catch (error) {
       const status = error.status || 500;
       failure = errorCategory(status);
+      if (!res.headersSent && error instanceof HttpError && error.retryAfter) res.setHeader('Retry-After', String(error.retryAfter));
       if (!res.headersSent && !res.destroyed) send(status, {
         error: error.status ? error.message : '服务暂时不可用，请稍后重试。',
         ...(error instanceof HttpError && error.code ? { code: error.code } : {})

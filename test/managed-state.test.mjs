@@ -47,7 +47,7 @@ async function listen(t, config) {
       body: body === undefined ? undefined : JSON.stringify(body)
     });
     if (response.headers.has('set-cookie')) cookie = response.headers.get('set-cookie').split(';')[0];
-    return { status: response.status, data: await response.json() };
+    return { status: response.status, data: await response.json(), retryAfter: response.headers.get('Retry-After') };
   };
   const login = headers => api('/api/login', { password }, headers);
   return { api, login, close };
@@ -131,8 +131,29 @@ test('错误格式不占登录额度，可信客户端之间独立限流', async
   for (let n = 0; n < 10; n++) {
     assert.equal((await api('/api/login', { password: 'invalid-password-for-testing' }, a)).status, 401);
   }
-  assert.equal((await login(a)).status, 429);
+  const throttled = await login(a);
+  assert.equal(throttled.status, 429);
+  assert.ok(Number(throttled.retryAfter) >= 1 && Number(throttled.retryAfter) <= 60);
   assert.equal((await login(b)).status, 200);
+});
+
+test('并发密码校验过载可重试，非可信模式忽略伪造来源', async t => {
+  const config = await setup(t);
+  await provisionState(config.dataDir, config.storageKey, initial);
+  const { api } = await listen(t, config);
+  const wrong = { password: 'invalid-password-for-testing' };
+  const responses = await Promise.all(Array.from({ length: 8 }, () => api('/api/login', wrong)));
+  const busy = responses.filter(response => response.status === 429);
+  assert.ok(busy.length > 0);
+  assert.ok(busy.every(response => response.retryAfter === '1'));
+  const admitted = responses.length - busy.length;
+  for (let n = admitted; n < 10; n++) {
+    const response = await api('/api/login', wrong, { 'X-Workbench-Client': '192.0.2.' + (n + 1) });
+    assert.equal(response.status, 401);
+  }
+  const throttled = await api('/api/login', { password }, { 'X-Workbench-Client': '192.0.2.20' });
+  assert.equal(throttled.status, 429);
+  assert.ok(Number(throttled.retryAfter) >= 1 && Number(throttled.retryAfter) <= 60);
 });
 
 test('导入提交前后进程中断，重启按清单选择完整数据', { timeout: 10000 }, async t => {

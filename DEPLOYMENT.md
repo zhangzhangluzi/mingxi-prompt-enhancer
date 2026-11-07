@@ -83,7 +83,7 @@ sudo systemctl reload caddy
 
 在使用 glibc 的 Linux 上，systemd 示例设置 `MALLOC_MMAP_THRESHOLD_=131072`，让较大的分配在释放后可以及时归还系统。沿用已有单元的部署可以只给本服务添加该环境变量，凭据和模型配置继续从原环境文件读取。
 
-`TRUST_PROXY_CLIENT=true` 仅用于回环反代已覆盖 `X-Workbench-Client` 并已校验上游来源的部署。直接运行或普通反代保持默认 false。生成和导入继续使用原有 JSON 格式。
+`TRUST_PROXY_CLIENT=true` 仅用于回环反代已覆盖 `X-Workbench-Client` 并已校验上游来源的部署。直接运行或普通反代保持默认 false。每个可信来源独立限制登录失败次数；来源超限和密码校验过载均返回 429，并附带以秒为单位的 `Retry-After`。
 
 ## 运行边界
 
