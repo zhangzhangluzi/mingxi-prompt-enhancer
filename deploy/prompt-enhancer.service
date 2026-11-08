@@ -1,5 +1,5 @@
 [Unit]
-Description=Private Prompt Enhancer
+Description=明晰
 After=network-online.target
 Wants=network-online.target
 
