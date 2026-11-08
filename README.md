@@ -1,6 +1,6 @@
-# 明晰 · 私有提示语增强
+# 明晰
 
-一个可部署到 Linux 服务器的中文工作台，支持任意输入语言。参考 [prompt-optimizer](https://github.com/linshenkx/prompt-optimizer) 的一键优化交互，独立实现，未复制上游代码。
+可部署到 Linux 服务器的中文提示语增强工作台，支持任意输入语言。参考 [prompt-optimizer](https://github.com/linshenkx/prompt-optimizer) 的一键优化交互，采用独立实现。
 
 公开仓库只包含源码、通用配置示例和验证说明，不包含任何生产域名、访问密码、API 密钥或业务数据。部署与安全边界见 [DEPLOYMENT.md](DEPLOYMENT.md) 和 [SECURITY.md](SECURITY.md)。
 
